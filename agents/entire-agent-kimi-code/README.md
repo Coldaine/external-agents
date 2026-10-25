@@ -44,7 +44,7 @@ See `EVIDENCE.md` for executed results and limitations, and `AGENT.md` for nativ
 
 ## Config safety and removal
 
-Installation appends a comment-delimited block, retaining unrelated config bytes, takes a timestamped backup beside config.toml, and writes atomically. Windows backups and temporary config files get an explicit current-user-only DACL before secret-bearing data is written. Installation uses a lock and rejects concurrent edits or damaged markers. `are-hooks-installed` checks every rule.
+Installation appends a comment-delimited block, retaining unrelated config bytes, takes a timestamped backup beside config.toml, and writes atomically. Windows backups get an explicit current-user-only DACL before secret-bearing data is written. Replacement config files retain the original config's security descriptor; a new config starts private. Installation uses a lock and rejects concurrent edits or damaged markers. `are-hooks-installed` checks every rule.
 
 Run `entire-agent-kimi-code uninstall-hooks` to remove only the managed block. **This removes capture hooks globally**, affecting all repositories. Existing checkpoints remain. Remove the installed binary to stop discovery. Backups contain the original sensitive config; keep them private and outside Git.
 
