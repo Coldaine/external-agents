@@ -12,6 +12,8 @@ Ten managed rules use SessionStart, UserPromptSubmit, TurnStarted, Stop, StopFai
 
 ## Storage and capabilities
 
+PreCompact is an explicit no-op with a diagnostic on stderr: Kimi appends compaction records while retaining the original wire log. Emitting Entire's Compaction event would reset byte cursors and double-count historical prompts/tokens. Normal capture continues from its current raw byte offset after compaction. SessionEnd is emitted by interactive `/exit`; prompt-mode process exit does not emit it in Kimi 2.3.2.
+
 Native `$KIMI_CODE_HOME/sessions/.../wire.jsonl` and `state.json` are read-only. Byte-identical raw snapshots and restoration data live under ignored `.entire/metadata/kimi-code/`. Child snapshots use Entire's `<sessionId>/subagents/agent-<agentId>.jsonl` convention. Checkpoint compaction translates native prompts, assistant output, tool calls and results into Entire Transcript Format. Raw bytes remain available separately.
 
 Declared: hooks, transcript analysis, compact transcript, token calculation and subagent aggregation. Token accounting counts `usage.record` once per call and ignores duplicate `step.end` usage. No model-generated summary provider, daemon, ACP service or historical import.

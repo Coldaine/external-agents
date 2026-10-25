@@ -272,6 +272,13 @@ func (a *Agent) ReassembleTranscript(chunks [][]byte) ([]byte, error) {
 	return bytes.Join(chunks, nil), nil
 }
 func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
+	if name == "pre-compact" {
+		// Kimi compacts model context by appending full_compaction records.
+		// Its wire log is not rewritten. Entire's Compaction event resets raw
+		// byte cursors, which would replay prompts and count old usage twice.
+		fmt.Fprintln(os.Stderr, "kimi-code: compaction leaves wire.jsonl append-only; retaining Entire byte cursors")
+		return nil, nil
+	}
 	kind := 0
 	for _, h := range hookRules {
 		if h.Name == name {
@@ -282,19 +289,21 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 		return nil, nil
 	}
 	var p struct {
-		ID          string          `json:"session_id"`
-		Cwd         string          `json:"cwd"`
-		Prompt      json.RawMessage `json:"prompt"`
-		Model       string          `json:"model"`
-		Reason      string          `json:"reason"`
-		SubID       string          `json:"subagent_id"`
-		AgentID     string          `json:"agent_id"`
-		AgentType   string          `json:"subagent_type"`
-		Name        string          `json:"agent_name"`
-		Description string          `json:"description"`
-		ToolID      string          `json:"tool_use_id"`
-		OriginName  string          `json:"origin_name"`
-		OriginKind  string          `json:"origin_kind"`
+		ID           string          `json:"session_id"`
+		Cwd          string          `json:"cwd"`
+		Prompt       json.RawMessage `json:"prompt"`
+		Model        string          `json:"model"`
+		Reason       string          `json:"reason"`
+		SubID        string          `json:"subagent_id"`
+		AgentID      string          `json:"agent_id"`
+		AgentType    string          `json:"subagent_type"`
+		Name         string          `json:"agent_name"`
+		Description  string          `json:"description"`
+		ToolID       string          `json:"tool_use_id"`
+		OriginName   string          `json:"origin_name"`
+		OriginKind   string          `json:"origin_kind"`
+		ErrorType    string          `json:"error_type"`
+		ErrorMessage string          `json:"error_message"`
 	}
 	if len(bytes.TrimSpace(b)) == 0 {
 		return nil, nil
@@ -338,6 +347,12 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 	}
 	if p.Reason != "" {
 		ev.Metadata["reason"] = p.Reason
+	}
+	if p.ErrorType != "" {
+		ev.Metadata["error_type"] = p.ErrorType
+	}
+	if p.ErrorMessage != "" {
+		ev.Metadata["error_message"] = p.ErrorMessage
 	}
 	if name == "stop-failure" || name == "interrupt" {
 		ev.Metadata["outcome"] = name

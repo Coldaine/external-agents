@@ -17,10 +17,10 @@ Verified actual prompt, assistant output and Write tool execution in wire.jsonl.
 
 ## Mapping
 
-SessionStart→1; TurnStarted→2; Stop/StopFailure/Interrupt→3; PreCompact→4; SessionEnd→5; SubagentStart→6; SubagentStop→7. User-origin TurnStarted and PostCompact are no-op to avoid duplicates.
+SessionStart→1; UserPromptSubmit/non-user TurnStarted→2; Stop/StopFailure/Interrupt→3; SessionEnd→5; SubagentStart→6; SubagentStop→7. User-origin TurnStarted and PostCompact are no-op to avoid duplicates. PreCompact is a documented no-op: real compaction appends to wire.jsonl without truncation, so emitting Entire's offset-resetting Compaction event would replay historical records and double-count tokens.
 Session helpers resolve native paths from the index with repository/containment validation. Raw reads/chunks preserve bytes. write-session stores restoration data only in Entire-owned storage; it does not rewrite Kimi sessions. Compact-transcript converts wire events to Entire format for checkpoint readability. Transcript analysis extracts structured Write/Edit paths and user prompts; arbitrary shell writes are not inferred.
 
 ## Test prerequisites and limits
 
 Real tests require kimi and entire on PATH, existing authenticated Kimi config and a disposable Git repository. Global hook installation affects all repositories, while Entire dispatch remains repository scoped. Pure protocol tests use isolated KIMI_CODE_HOME. Generic lifecycle harness currently assumes Unix/tmux; provide a native Windows smoke script as well.
-Compaction, failures, interruptions and subagents require further captured scenarios before completion. No AI summary provider, background daemon or historical import.
+Real compaction, Escape interruption, interactive session end and foreground subagent capture were exercised. StopFailure was captured with an isolated loopback-only HTTP 400 provider and no real credentials. See EVIDENCE.md for outcomes and remaining limits. No AI summary provider, background daemon or historical import.

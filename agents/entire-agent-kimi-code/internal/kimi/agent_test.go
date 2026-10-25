@@ -215,6 +215,12 @@ func TestLifecycleEdgesMapAndDuplicateEventsNoOp(t *testing.T) {
 	p, _ := json.Marshal(map[string]any{"session_id": "session_test", "cwd": repo, "prompt": []any{map[string]string{"type": "text", "text": "hello"}}, "reason": "test", "subagent_id": "0"})
 	for _, h := range hookRules {
 		ev, e := New().ParseHook(h.Name, p)
+		if h.Name == "pre-compact" {
+			if ev != nil || e != nil {
+				t.Fatal("append-only compaction must retain offsets", ev, e)
+			}
+			continue
+		}
 		if h.Type == 6 || h.Type == 7 {
 			if ev != nil || e != nil {
 				t.Fatal("uncorrelated subagent must be no-op", ev, e)
@@ -234,6 +240,42 @@ func TestLifecycleEdgesMapAndDuplicateEventsNoOp(t *testing.T) {
 	userTurn, _ := json.Marshal(map[string]any{"session_id": "session_test", "cwd": repo, "origin_kind": "user", "prompt": "duplicate"})
 	if ev, e := New().ParseHook("turn-started", userTurn); ev != nil || e != nil {
 		t.Fatal("duplicate user turn-started", ev, e)
+	}
+}
+
+func TestCapturedFailureRetainsErrorMetadata(t *testing.T) {
+	repo, home := setup(t)
+	nativeFixture(t, repo, home)
+	b, e := os.ReadFile("../../testdata/hooks/StopFailure.json")
+	if e != nil {
+		t.Fatal(e)
+	}
+	var payload map[string]any
+	if e = json.Unmarshal(b, &payload); e != nil {
+		t.Fatal(e)
+	}
+	payload["cwd"] = repo
+	b, _ = json.Marshal(payload)
+	ev, e := New().ParseHook("stop-failure", b)
+	if e != nil || ev == nil || ev.Metadata["error_type"] != "APIStatusError" || ev.Metadata["error_message"] != "400 Intentional Entire integration test failure" {
+		t.Fatalf("lost failure metadata: %v %v", ev, e)
+	}
+}
+
+func TestAppendOnlyCompactionDoesNotReplayUsage(t *testing.T) {
+	repo, home := setup(t)
+	path := nativeFixture(t, repo, home)
+	before, _ := os.ReadFile(path)
+	payload, _ := json.Marshal(map[string]string{"cwd": repo, "session_id": "session_test"})
+	ev, e := New().ParseHook("pre-compact", payload)
+	if e != nil || ev != nil {
+		t.Fatal("compaction reset event", ev, e)
+	}
+	after := append(append([]byte{}, before...), []byte("{\"type\":\"full_compaction.begin\"}\n{\"type\":\"full_compaction.end\"}\n{\"type\":\"usage.record\",\"usage\":{\"inputOther\":100,\"output\":2}}\n")...)
+	put(t, path, after)
+	u, e := tokenUsage(after, len(before))
+	if e != nil || u.Input != 100 || u.Output != 2 || u.Calls != 1 {
+		t.Fatalf("replayed pre-compaction usage: %+v %v", u, e)
 	}
 }
 
