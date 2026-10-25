@@ -25,7 +25,6 @@ var hookRules = []struct {
 	Type        int
 }{
 	{"SessionStart", "session-start", 1}, {"TurnStarted", "turn-started", 2},
-	{"UserPromptSubmit", "user-prompt-submit", 2},
 	{"Stop", "stop", 3}, {"StopFailure", "stop-failure", 3}, {"Interrupt", "interrupt", 3},
 	{"PreCompact", "pre-compact", 4}, {"SessionEnd", "session-end", 5},
 	{"SubagentStart", "subagent-start", 6}, {"SubagentStop", "subagent-stop", 7},
@@ -299,6 +298,12 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 		fmt.Fprintln(os.Stderr, "kimi-code: compaction leaves wire.jsonl append-only; retaining Entire byte cursors")
 		return nil, nil
 	}
+	if name == "user-prompt-submit" {
+		// Unmanaged: TurnStarted is the only managed turn boundary, covering
+		// user, task and system origins. This hook stays a diagnostic no-op.
+		fmt.Fprintln(os.Stderr, "kimi-code: user-prompt-submit is unmanaged; turn boundaries come from turn-started")
+		return nil, nil
+	}
 	kind := 0
 	for _, h := range hookRules {
 		if h.Name == name {
@@ -321,7 +326,7 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 	if !samePath(p.Cwd, protocol.RepoRoot()) {
 		return nil, errors.New("hook cwd does not match repository root")
 	}
-	if name == "turn-started" && (isSubagentTurnOrigin(p) || p.OriginKind == "user" || p.Origin.Kind == "user") {
+	if name == "turn-started" && isSubagentTurnOrigin(p) {
 		return nil, nil
 	}
 	ref, e := snapshot(p.ID, p.Cwd)
@@ -420,7 +425,7 @@ type hookPayload struct {
 }
 
 // isSubagentTurnOrigin suppresses child TurnStarted hooks. Only an explicit
-// "subagent" marker suppresses: main task and system turns (which report
+// "subagent" marker suppresses: user, task and system turns (which report
 // "user", a task kind, or no origin at all) must keep opening the turn.
 func isSubagentTurnOrigin(p hookPayload) bool {
 	for _, v := range []string{p.OriginName, p.OriginKind, p.Origin.Name, p.Origin.Kind, p.Origin.OriginName, p.Origin.OriginKind} {

@@ -25,10 +25,9 @@ func backupsOf(home string) []string {
 	return m
 }
 
-func TestHookBlockDeclaresExactTenSerializedRules(t *testing.T) {
+func TestHookBlockDeclaresExactNineSerializedRules(t *testing.T) {
 	want := []struct{ event, name string }{
 		{"SessionStart", "session-start"}, {"TurnStarted", "turn-started"},
-		{"UserPromptSubmit", "user-prompt-submit"},
 		{"Stop", "stop"}, {"StopFailure", "stop-failure"}, {"Interrupt", "interrupt"},
 		{"PreCompact", "pre-compact"}, {"SessionEnd", "session-end"},
 		{"SubagentStart", "subagent-start"}, {"SubagentStop", "subagent-stop"},

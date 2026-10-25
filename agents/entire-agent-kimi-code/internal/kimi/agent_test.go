@@ -92,7 +92,7 @@ func TestInstallerPreservesSecretAndForeignHooks(t *testing.T) {
 	put(t, path, original)
 	a := New()
 	n, e := a.InstallHooks(false, false)
-	if e != nil || n != 10 {
+	if e != nil || n != 9 {
 		t.Fatalf("install: %d %v", n, e)
 	}
 	first, _ := os.ReadFile(path)
@@ -238,9 +238,15 @@ func TestLifecycleEdgesMapAndDuplicateEventsNoOp(t *testing.T) {
 			t.Fatalf("duplicate %s wasn't no-op", name)
 		}
 	}
-	userTurn, _ := json.Marshal(map[string]any{"session_id": "session_test", "cwd": repo, "origin_kind": "user", "prompt": "duplicate"})
-	if ev, e := New().ParseHook("turn-started", userTurn); ev != nil || e != nil {
-		t.Fatal("duplicate user turn-started", ev, e)
+	// TurnStarted is the only managed turn boundary: a user-origin turn must
+	// open the turn rather than wait for the unmanaged user-prompt-submit.
+	userTurn, _ := json.Marshal(map[string]any{"session_id": "session_test", "cwd": repo, "origin_kind": "user", "prompt": "user"})
+	if ev, e := New().ParseHook("turn-started", userTurn); e != nil || ev == nil || ev.Type != 2 {
+		t.Fatal("user turn-started lost its boundary", ev, e)
+	}
+	promptSubmit, _ := json.Marshal(map[string]any{"session_id": "session_test", "cwd": repo, "prompt": []any{map[string]string{"type": "text", "text": "hello"}}})
+	if ev, e := New().ParseHook("user-prompt-submit", promptSubmit); ev != nil || e != nil {
+		t.Fatal("unmanaged user-prompt-submit must be a no-op", ev, e)
 	}
 }
 
@@ -381,14 +387,12 @@ func TestSubagentCorrelationAndChildStops(t *testing.T) {
 // Real TurnStarted payloads have carried the subagent marker as a flat
 // origin_name, as origin_kind, and as a nested origin object, while the
 // captured main user turn reports origin_kind "user". Only an explicit
-// "subagent" marker may suppress the child turn; main task and system turns
-// must keep opening the turn boundary.
+// "subagent" marker may suppress the child turn; user, task and system
+// turns must keep opening the turn boundary.
 func TestChildTurnStartedOriginVariantsSuppressConservatively(t *testing.T) {
 	repo, home := setup(t)
 	nativeFixture(t, repo, home)
 	suppressed := []map[string]any{
-		{"origin_kind": "user"},
-		{"origin": map[string]string{"kind": "user"}},
 		{"origin_name": "subagent"},
 		{"origin_kind": "subagent"},
 		{"origin": map[string]string{"name": "subagent"}},
@@ -408,9 +412,12 @@ func TestChildTurnStartedOriginVariantsSuppressConservatively(t *testing.T) {
 		}
 	}
 	kept := []map[string]any{
+		// The real captured main-turn shape: origin_kind "user".
+		{"origin_kind": "user"},
 		{"origin_kind": "task"},
 		{"origin_kind": "system"},
 		{"origin_name": "system"},
+		{"origin": map[string]string{"kind": "user"}},
 		{},
 	}
 	for _, origin := range kept {
