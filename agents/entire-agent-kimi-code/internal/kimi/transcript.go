@@ -163,6 +163,9 @@ func (a *Agent) ExtractModifiedFiles(path string, offset int) ([]string, int, er
 	if e != nil {
 		return nil, pos, e
 	}
+	if filepath.Ext(path) != ".jsonl" {
+		return files, pos, nil
+	}
 	id := strings.TrimSuffix(filepath.Base(path), ".jsonl")
 	children, e := childTranscripts(filepath.Join(filepath.Dir(path), id, "subagents"))
 	if e != nil {
