@@ -3,9 +3,11 @@ package kimi
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 type subagent struct {
@@ -156,7 +158,14 @@ func childTranscripts(dir string) ([][]byte, error) {
 	// non-directory (e.g. a transcript whose name is not ".jsonl"), simply has
 	// no children; ReadDir alone reports that as ENOTDIR on Unix but not on
 	// Windows, so stat the path to keep the behavior identical on both.
-	if info, e := os.Stat(dir); e != nil || !info.IsDir() {
+	info, e := os.Stat(dir)
+	if os.IsNotExist(e) || errors.Is(e, syscall.ENOTDIR) {
+		return nil, nil
+	}
+	if e != nil {
+		return nil, e
+	}
+	if !info.IsDir() {
 		return nil, nil
 	}
 	entries, e := os.ReadDir(dir)
