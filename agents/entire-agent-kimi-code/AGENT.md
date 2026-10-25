@@ -15,6 +15,8 @@ SessionEnd did not fire in prompt mode. Interactive /exit was verified to fire S
 session_index.jsonl has sessionId/sessionDir/workDir. Main transcript: sessions/<workDirKey>/<sessionId>/agents/main/wire.jsonl; agent-* siblings contain subagents. Never modify native records.
 Verified actual prompt, assistant output and Write tool execution in wire.jsonl. turn.prompt.input holds text parts. context.append_loop_event.event has tool.call (name,args,toolCallId), tool.result and content.part. usage.record has per-call usage inputOther/output/inputCacheRead/inputCacheCreation; ignore duplicated step.end usage.
 
+The installed Entire 0.12.1 executable uses line counts in `strategy.countTranscriptItems`, not the protocol's documented byte metric. Installation writes repository-local runtime.json compatibility metadata. Public standalone parsing uses bytes; live configured 0.12.1 reads translate line cursors to raw byte boundaries. The smoke test checks that the resumed checkpoint's api_call_count equals only the newly appended native usage records.
+
 ## Mapping
 
 SessionStart→1; UserPromptSubmit/non-user TurnStarted→2; Stop/StopFailure/Interrupt→3; SessionEnd→5; SubagentStart→6; SubagentStop→7. User-origin TurnStarted and PostCompact are no-op to avoid duplicates. PreCompact is a documented no-op: real compaction appends to wire.jsonl without truncation, so emitting Entire's offset-resetting Compaction event would replay historical records and double-count tokens.

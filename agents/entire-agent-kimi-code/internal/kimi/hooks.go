@@ -2,7 +2,6 @@ package kimi
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +9,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,7 +21,7 @@ func hookBlock() []byte {
 	var b strings.Builder
 	b.WriteString(beginMarker)
 	for _, h := range hookRules {
-		command, _ := json.Marshal("entire hooks kimi-code " + h.Name)
+		command := strconv.Quote("entire hooks kimi-code " + h.Name)
 		fmt.Fprintf(&b, "[[hooks]]\nevent = %q\ncommand = %s\ntimeout = 30\n\n", h.Event, command)
 	}
 	b.WriteString(endMarker)
@@ -68,7 +68,7 @@ func updateConfig(install bool) (int, error) {
 	}
 	lock, e := os.OpenFile(path+".entire-lock", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if e != nil {
-		return 0, errors.New("Kimi config is locked by another Entire installer")
+		return 0, errors.New("kimi config is locked by another Entire installer")
 	}
 	defer os.Remove(lock.Name())
 	defer lock.Close()
@@ -97,8 +97,8 @@ func updateConfig(install bool) (int, error) {
 			return 0, e
 		}
 		if e = secureBackup(backup); e != nil {
-			f.Close()
-			os.Remove(backup)
+			_ = f.Close()
+			_ = os.Remove(backup)
 			return 0, e
 		}
 		_, e = f.Write(before)
@@ -115,7 +115,7 @@ func updateConfig(install bool) (int, error) {
 		return 0, e
 	}
 	if !bytes.Equal(current, before) {
-		return 0, errors.New("Kimi config changed concurrently; retry installation")
+		return 0, errors.New("kimi config changed concurrently; retry installation")
 	}
 	// Keep the existing config file identity and ACL on Windows through a
 	// sibling temporary file secured before it receives secret-bearing data.
@@ -125,7 +125,9 @@ func updateConfig(install bool) (int, error) {
 	}
 	temp := f.Name()
 	defer os.Remove(temp)
-	f.Close()
+	if e = f.Close(); e != nil {
+		return 0, e
+	}
 	if e = secureBackup(temp); e != nil {
 		return 0, e
 	}
@@ -137,8 +139,14 @@ func updateConfig(install bool) (int, error) {
 	}
 	return count, nil
 }
-func (a *Agent) InstallHooks(_ bool, _ bool) (int, error) { return updateConfig(true) }
-func (a *Agent) UninstallHooks() error                    { _, e := updateConfig(false); return e }
+func (a *Agent) InstallHooks(_ bool, _ bool) (int, error) {
+	n, e := updateConfig(true)
+	if e != nil {
+		return n, e
+	}
+	return n, configureRuntime()
+}
+func (a *Agent) UninstallHooks() error { _, e := updateConfig(false); return e }
 func (a *Agent) AreHooksInstalled() bool {
 	b, e := os.ReadFile(filepath.Join(kimiHome(), "config.toml"))
 	return e == nil && bytes.Count(b, []byte(beginMarker)) == 1 && bytes.Contains(b, hookBlock())

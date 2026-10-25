@@ -130,11 +130,11 @@ func nativeSession(id, repo string) (string, error) {
 			continue
 		}
 		if !samePath(repo, r.Work) {
-			return "", errors.New("Kimi session belongs to another repository")
+			return "", errors.New("kimi session belongs to another repository")
 		}
 		p, e := canonical(filepath.Join(r.Dir, "agents", "main", "wire.jsonl"))
 		if e != nil || !within(root, p) || filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(p)))) != id {
-			return "", errors.New("Kimi session index escapes session store")
+			return "", errors.New("kimi session index escapes session store")
 		}
 		found = p
 	}
@@ -143,7 +143,7 @@ func nativeSession(id, repo string) (string, error) {
 	}
 	return found, nil
 }
-func atomicWrite(path string, data []byte, mode os.FileMode) error {
+func atomicWrite(path string, data []byte) error {
 	if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
 		return e
 	}
@@ -153,7 +153,7 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	}
 	name := f.Name()
 	defer os.Remove(name)
-	if e = f.Chmod(mode); e == nil {
+	if e = f.Chmod(0o600); e == nil {
 		_, e = f.Write(data)
 	}
 	if e == nil {
@@ -192,7 +192,7 @@ func snapshot(id, repo string) (string, error) {
 	if e = managedPath(ref); e != nil {
 		return "", e
 	}
-	if e = atomicWrite(ref, data, 0600); e != nil {
+	if e = atomicWrite(ref, data); e != nil {
 		return "", e
 	}
 	_ = os.Remove(ref + ".session.json")
@@ -237,14 +237,14 @@ func (a *Agent) WriteSession(s protocol.AgentSessionJSON) error {
 	if e := managedPath(s.SessionRef); e != nil {
 		return e
 	}
-	if e := atomicWrite(s.SessionRef, s.NativeData, 0600); e != nil {
+	if e := atomicWrite(s.SessionRef, s.NativeData); e != nil {
 		return e
 	}
 	b, e := json.Marshal(s)
 	if e != nil {
 		return e
 	}
-	return atomicWrite(s.SessionRef+".session.json", b, 0600)
+	return atomicWrite(s.SessionRef+".session.json", b)
 }
 func (a *Agent) ReadTranscript(ref string) ([]byte, error) {
 	i, e := os.Stat(ref)

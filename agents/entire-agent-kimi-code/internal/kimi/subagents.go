@@ -83,7 +83,7 @@ func copySubagents(native, ref, id string) error {
 		if e = managedPath(dest); e != nil {
 			return e
 		}
-		if e = atomicWrite(dest, b, 0600); e != nil {
+		if e = atomicWrite(dest, b); e != nil {
 			return e
 		}
 	}
