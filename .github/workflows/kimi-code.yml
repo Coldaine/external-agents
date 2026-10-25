@@ -1,7 +1,7 @@
 name: Kimi Code adapter
 on:
   push:
-    branches: [main, agent/kimi-code]
+    branches: [main, agent/kimi-code, codex/kimi-local]
     paths: ['agents/entire-agent-kimi-code/**', '.github/workflows/kimi-code.yml']
   pull_request:
     paths: ['agents/entire-agent-kimi-code/**', '.github/workflows/kimi-code.yml']

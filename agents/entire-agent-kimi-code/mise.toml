@@ -1,4 +1,4 @@
 [tasks.build]
-run = "go build -o entire-agent-kimi-code ./cmd/entire-agent-kimi-code"
+run = "go build ./cmd/entire-agent-kimi-code"
 [tasks.test]
 run = "go test ./..."

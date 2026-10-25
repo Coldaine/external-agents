@@ -1,17 +1,11 @@
 """Real lifecycle-hook capture for PreCompact/PostCompact, StopFailure, Interrupt, SessionEnd.
 
 Requires installed Kimi CLI with existing authentication in place; never copies
-credentials and never rewrites config beyond a temporary hook append that is
-installed and restored through a guarded sibling-temp atomic ``os.replace``
-(a fresh comparison immediately precedes each replacement). The ``finally``
-restore writes the original bytes only when the file is still unchanged since
-install; detected concurrent drift is reported loudly and never silently
-clobbered, leaving the temporary hooks in place for manual reconciliation.
-A hard kill outside ``finally`` can leave the temporary block in place; remove
-it manually. Captures raw hook payloads into a disposable output directory;
-run ``sanitize`` to turn one raw capture into a checked-in fixture (session
-ids, cwd, and titles replaced with stable placeholders). Never prints
-configuration content.
+credentials and never rewrites config beyond a byte-guarded temporary hook
+append that is restored in ``finally``. Captures raw hook payloads into a
+disposable output directory; run ``sanitize`` to turn one raw capture into a
+checked-in fixture (session ids, cwd, and titles replaced with stable
+placeholders). Never prints configuration content.
 
 Driver:  py -3 scripts/capture-kimi-lifecycle.py --output <raw-capture-dir>
 Hook:    py -3 scripts/capture-kimi-lifecycle.py capture <Event>
@@ -22,22 +16,17 @@ Triggers, all real and non-destructive:
 - PreCompact/PostCompact: ACP builtin slash command ``/compact`` on a session
   with history.
 - Interrupt: ACP ``session/cancel`` while a turn is running a Bash sleep.
-- SessionEnd: ACP ``session/close`` followed by a graceful close of the ACP
-  stdio session. A print-mode ``kimi -p`` process exit does not emit it, so it
-  is never inferred from process exit.
-- StopFailure: print-mode run whose turn fails mid-run. Requires the caller to
-  export ``KIMI_LIFECYCLE_FAILURE_MODEL`` with a ``--model`` alias known to
-  fail (for example one that points at an unreachable endpoint). The model
-  value is never written to output, and the failure run's stderr is redacted
-  of it before reporting; when the variable is unset the scenario is
-  skipped with a clear message instead of fabricating a capture.
+- SessionEnd: session closed normally via ACP ``session/close``. Headless
+  process exit alone does not emit SessionEnd in the tested version.
+- StopFailure: isolated loopback-only HTTP 400 provider, without real credentials.
 
-Interactive-exit capture is not attempted: there is no PTY on this Windows
-host to drive a TUI, and killing a process does not emit graceful lifecycle
-events. If an induced event never arrives the driver reports it as missing
-instead of fabricating a capture.
+Interactive /exit can also be tested through a PTY. This driver uses ACP and reports missing events instead of fabricating captures.
 """
 import argparse
+import csv
+import io
+import queue
+import threading
 import json
 import os
 from pathlib import Path
@@ -54,6 +43,8 @@ SANITIZED_TITLE = "Lifecycle Probe Session"
 
 
 def hook_mode():
+    if not os.environ.get("KIMI_LIFECYCLE_OUT"):
+        return
     event = json.load(sys.stdin)
     out = Path(os.environ["KIMI_LIFECYCLE_OUT"])
     out.mkdir(parents=True, exist_ok=True)
@@ -65,19 +56,12 @@ def hook_mode():
 def sanitize_string(value, repo):
     if value == repo or value.startswith(repo + "/") or value.startswith(repo + "\\"):
         return SANITIZED_REPO + value[len(repo):].replace("\\", "/")
-    # Replace the probe repo name (with its random temp-dir suffix) before the
-    # wd_ rule so a workspace id embedding the repo loses the suffix too.
-    value = re.sub(r"entire-kimi-lifecycle-[A-Za-z0-9_]+", "entire-kimi-lifecycle-repo", value)
     value = re.sub(r"wd_[A-Za-z0-9_]+", "wd_<workspace>", value)
     value = re.sub(r"session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
                    SANITIZED_SESSION, value)
+    value = re.sub(r"entire-kimi-lifecycle-[A-Za-z0-9_]+", "entire-kimi-lifecycle-repo", value)
     value = re.sub(r"(Users[/\\])[A-Za-z0-9_.\-]+", r"\1<user>", value)
     return value
-
-
-# Environment-specific snapshot state: the configured model pool and any
-# similar per-machine snapshot keys carry nothing lifecycle-relevant.
-DROPPED_KEYS = ("modelPool",)
 
 
 def sanitize_obj(obj, repo):
@@ -88,8 +72,6 @@ def sanitize_obj(obj, repo):
                 out[key] = SANITIZED_SESSION
             elif key in ("session_title", "sessionTitle", "title") and isinstance(value, str) and value:
                 out[key] = SANITIZED_TITLE
-            elif key in DROPPED_KEYS:
-                continue
             else:
                 out[key] = sanitize_obj(value, repo)
         return out
@@ -106,12 +88,10 @@ def sanitize_command(raw, fixture, repo):
 
 
 def sanitize_transcript_command(raw, fixture, repo):
-    """Sanitize a raw wire log: drop payload-heavy and environment-specific
-    records (``llm.*`` requests and ``profile.bind`` embed the full model
-    request: system prompt, tool schemas, local skill paths;
-    ``changeNotifier.snapshot`` is a per-machine snapshot of the model pool,
-    local skills hash and configured subagent names) and replace session ids,
-    workspace names, and user paths with placeholders."""
+    """Sanitize a raw wire log: drop payload-heavy records (``llm.*`` requests
+    and ``profile.bind`` embed the full model request: system prompt, tool
+    schemas, local skill paths) and replace session ids, workspace names, and
+    user paths with placeholders."""
     lines = []
     for line in Path(raw).read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -119,7 +99,12 @@ def sanitize_transcript_command(raw, fixture, repo):
             continue
         record = json.loads(line)
         kind = str(record.get("type", ""))
-        if kind.startswith("llm.") or kind in ("profile.bind", "changeNotifier.snapshot"):
+        allowed = (kind in ("metadata", "turn.prompt", "context.append_loop_event",
+                            "context.append_message", "context.apply_compaction", "context.undo", "context.clear",
+                            "usage.record", "turn.cancel", "turn.ended", "prompt.aborted",
+                            "prompt.completed", "agent.turn.started", "agent.turn.ended")
+                   or kind.startswith(("subagent.", "full_compaction.", "turn.step.")))
+        if not allowed:
             continue
         lines.append(json.dumps(sanitize_obj(record, repo)))
     Path(fixture).write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -129,38 +114,6 @@ class AcpError(RuntimeError):
     pass
 
 
-class ConfigDrift(RuntimeError):
-    pass
-
-
-def guarded_replace(path, expected, data):
-    """Atomically replace ``path`` with ``data`` behind a fresh concurrency check.
-
-    Writes ``data`` to a sibling temp file in the target's directory, then
-    re-reads the target and verifies it still holds ``expected`` immediately
-    before the ``os.replace`` swap. Any concurrent change raises ConfigDrift
-    and never reaches the replacement, so drifted content is never clobbered.
-    """
-    tmp = None
-    try:
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".",
-                                   suffix=".tmp")
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-        current = path.read_bytes()
-        if current != expected:
-            raise ConfigDrift(
-                f"{path} changed concurrently; {path.name}.tmp swap aborted")
-        os.replace(tmp, path)
-        tmp = None
-    finally:
-        if tmp is not None:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-
-
 class AcpClient:
     """Minimal Agent Client Protocol client over stdio."""
 
@@ -168,6 +121,15 @@ class AcpClient:
         self.proc = proc
         self.next_id = 1
         self.closed = False
+        self.messages = queue.Queue()
+        def reader():
+            for line in self.proc.stdout:
+                try:
+                    self.messages.put(json.loads(line))
+                except (ValueError, UnicodeError):
+                    continue
+            self.messages.put(None)
+        threading.Thread(target=reader, daemon=True).start()
 
     def _send(self, payload):
         self.proc.stdin.write((json.dumps(payload) + "\n").encode("utf-8"))
@@ -179,16 +141,14 @@ class AcpClient:
         Messages other than the awaited response are discarded; only one
         request is ever in flight, so nothing needs buffering.
         """
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            line = self.proc.stdout.readline()
-            if not line:
-                self.closed = True
-                raise AcpError("ACP server closed stdout: " + self.proc.stderr.read().decode(errors="replace"))
-            line = line.strip()
-            if line:
-                return json.loads(line)
-        return None
+        try:
+            message = self.messages.get(timeout=timeout)
+        except queue.Empty:
+            return None
+        if message is None:
+            self.closed = True
+            raise AcpError("ACP server closed stdout")
+        return message
 
     def request(self, method, params, timeout=300):
         rid = self.next_id
@@ -283,6 +243,7 @@ def wait_for_captures(out, events, timeout):
 def capture_acp(repo, out, env):
     env = dict(env)
     env.pop("CODEX_THREAD_ID", None)
+    env.pop("CODEX_SESSION_ID", None)
     proc = subprocess.Popen(
         ["kimi", "acp"], cwd=repo, env=env,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -348,12 +309,46 @@ def capture_acp(repo, out, env):
     return results
 
 
+def private_atomic_write(path, data, expected=None):
+    """Secure an empty sibling file before putting sensitive config bytes in it."""
+    fd, name = tempfile.mkstemp(prefix=".entire-lifecycle-", dir=path.parent)
+    try:
+        if os.name == "nt":
+            if expected is not None:
+                # The config keeps its original descriptor; backups stay private.
+                subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                    "$ErrorActionPreference='Stop'; $a=[IO.File]::GetAccessControl($env:ENTIRE_ACL_SOURCE); "
+                    "[IO.File]::SetAccessControl($env:ENTIRE_ACL_DESTINATION,$a)"],
+                    env=dict(os.environ,ENTIRE_ACL_SOURCE=str(path),ENTIRE_ACL_DESTINATION=name),
+                    check=True,capture_output=True)
+            else:
+                output = subprocess.check_output(["whoami", "/user", "/fo", "csv", "/nh"], text=True)
+                sid = next(csv.reader(io.StringIO(output.strip())))[1]
+                subprocess.run(["icacls", name, "/inheritance:r", "/grant:r", f"*{sid}:(F)"],
+                               check=True, capture_output=True)
+        else:
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as target:
+            fd = -1
+            target.write(data)
+            target.flush()
+            os.fsync(target.fileno())
+        if expected is not None and path.read_bytes() != expected:
+            raise RuntimeError("Config changed concurrently before replacement; preserving it")
+        os.replace(name, path)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        Path(name).unlink(missing_ok=True)
+
+
 def driver(args):
     out = Path(args.output).resolve()
     out.mkdir(parents=True, exist_ok=True)
     repo = Path(tempfile.mkdtemp(prefix="entire-kimi-lifecycle-"))
     env = dict(os.environ)
     env.pop("CODEX_THREAD_ID", None)
+    env.pop("CODEX_SESSION_ID", None)
     env.pop("CLAUDE_SESSION_ID", None)
     env["KIMI_LIFECYCLE_OUT"] = str(out)
     env["KIMI_CODE_TRUST_WORKSPACE"] = "1"
@@ -378,35 +373,25 @@ def driver(args):
         command = f'py -3 "{script}" capture {event}'
         addition += f"\n[[hooks]]\nevent = {json.dumps(event)}\ncommand = {json.dumps(command)}\ntimeout = 30\n"
     installed = original + addition.encode()
-    current = config.read_bytes()
-    if current != original:
-        raise ConfigDrift(
-            f"Config changed before temporary hooks were installed "
-            f"({len(original.splitlines())} -> {len(current.splitlines())} lines); not modifying it")
-    guarded_replace(config, original, installed)
+    lock_path = config.with_name(config.name + ".entire-lock")
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     try:
+        if config.read_bytes() != original:
+            raise RuntimeError("Config changed before capture setup; retry")
+        backup = config.with_name(config.name + f".entire-lifecycle.{time.time_ns()}.bak")
+        private_atomic_write(backup, original)
+        private_atomic_write(config, installed, expected=original)
         acp_results = capture_acp(repo, out, env)
         print("ACP scenario:", json.dumps(acp_results, indent=2))
 
-        # Print-mode clean-turn run. SessionEnd is not expected from this
-        # process exit (see the module docstring).
-        run("kimi", "-p", "Reply with exactly LIFECYCLE_OK. Do not use tools.", timeout=240)
-        failure_model = os.environ.get("KIMI_LIFECYCLE_FAILURE_MODEL", "")
-        if failure_model:
-            # The caller-provided alias must be a model that starts and then
-            # fails mid-run, so the turn produces StopFailure rather than Stop.
-            failure = subprocess.run(
-                ["kimi", "--model", failure_model, "-p",
-                 "Reply with exactly LIFECYCLE_FAIL_OK. Do not use tools."],
-                cwd=repo, env=env, capture_output=True, timeout=600)
-        else:
-            failure = None
-            print(json.dumps({
-                "scenario": "StopFailure",
-                "skipped": "KIMI_LIFECYCLE_FAILURE_MODEL is not set; export it "
-                           "with a --model alias known to fail mid-run to "
-                           "capture StopFailure",
-            }, indent=2))
+        # Deterministic loopback-only provider failure: no private model alias,
+        # LAN dependency, or real credentials are needed for this path.
+        failure = subprocess.run(
+            [sys.executable, str(script.with_name("smoke-failure.py"))],
+            cwd=repo, env=env, capture_output=True, timeout=120, check=True)
+        failure_result = json.loads(failure.stdout)
+        failure_capture = Path(failure_result["evidence"]) / "StopFailure.json"
+        (out / f"StopFailure-{time.time_ns()}.json").write_bytes(failure_capture.read_bytes())
 
         time.sleep(5)  # let trailing SessionEnd hooks finish writing
 
@@ -421,39 +406,29 @@ def driver(args):
 
         captured = {capture.name.rsplit("-", 1)[0] for capture in out.glob("*.json")}
         missing = [event for event in HOOK_EVENTS if event not in captured]
-        summary = {
+        print(json.dumps({
             "captured": sorted(captured),
             "missing": missing,
-            "failure_scenario": "skipped (KIMI_LIFECYCLE_FAILURE_MODEL not set)"
-                                if failure is None else "captured",
+            "failure_run_exit_code": failure_result["kimi_exit"],
+            "failure_run_stderr": failure.stderr.decode(errors="replace")[:2000],
             "output_dir": str(out),
             "repo": str(repo),
-        }
-        if failure is not None:
-            stderr = failure.stderr.decode(errors="replace")
-            if failure_model:
-                # Never report the caller-supplied failure model alias.
-                stderr = stderr.replace(failure_model, "<redacted-failure-model>")
-            summary["failure_run_exit_code"] = failure.returncode
-            summary["failure_run_stderr"] = stderr[:2000]
-        print(json.dumps(summary, indent=2))
+        }, indent=2))
+        if missing:
+            raise RuntimeError("Missing native lifecycle captures: " + ", ".join(missing))
     finally:
-        current = config.read_bytes()
-        if current == installed:
-            guarded_replace(config, installed, original)
-            print("Original configuration restored byte-for-byte")
-        elif current == original:
-            print("Temporary hooks already absent; configuration left as found")
-        else:
-            # Report shape drift without printing configuration content, and
-            # never clobber the drifted file: keep the temporary hooks for
-            # safe manual reconciliation.
-            before = len(original.splitlines())
-            after = len(current.splitlines())
-            marker_present = b"temporary Entire lifecycle capture" in current
-            raise ConfigDrift(
-                "Config changed concurrently; retaining capture hooks for safe "
-                f"manual reconciliation (lines {before}->{after}, temp hooks still present: {marker_present})")
+        try:
+            current = config.read_bytes()
+            block = addition.encode()
+            if current.count(block) == 1:
+                private_atomic_write(config, current.replace(block, b"", 1), expected=current)
+                print("Temporary capture hooks removed; unrelated config preserved")
+            elif current != original:
+                raise RuntimeError("Capture block changed concurrently; preserving config for reconciliation")
+        finally:
+            os.close(lock_fd)
+            lock_path.unlink()
+
 
 
 def main():

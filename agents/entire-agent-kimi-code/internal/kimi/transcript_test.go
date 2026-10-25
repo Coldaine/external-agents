@@ -12,6 +12,17 @@ import (
 	"github.com/MooseGooseConsulting/external-agents/agents/entire-agent-kimi-code/internal/protocol"
 )
 
+func TestGenericJSONFixtureDoesNotBecomeChildDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test-transcript.json")
+	if e := os.WriteFile(path, []byte("{}\n"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	files, pos, e := New().ExtractModifiedFiles(path, 0)
+	if e != nil || len(files) != 0 || pos != 3 {
+		t.Fatalf("generic JSON: files=%v position=%d err=%v", files, pos, e)
+	}
+}
+
 func TestRecordsOffsetBeyondLengthClampsToEOF(t *testing.T) {
 	b := []byte("{\"type\":\"turn.prompt\"}\n")
 	for _, offset := range []int{len(b), len(b) + 5, len(b) * 10} {

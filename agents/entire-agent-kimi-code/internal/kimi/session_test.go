@@ -39,7 +39,7 @@ func sessionTreeAt(t *testing.T, home, parent, id, content string) string {
 
 func TestSessionIDsAndResumeCommand(t *testing.T) {
 	a := New()
-	for _, id := range []string{"", ".", "..", ".hidden", "sess id", "sess\tid", "x\x00y", strings.Repeat("a", 240)} {
+	for _, id := range []string{"", ".", "..", ".hidden", "--auto", "-S", "sess id", "sess\tid", "x\x00y", strings.Repeat("a", 240)} {
 		if validID(id) {
 			t.Errorf("invalid session id accepted %q", id)
 		}
@@ -229,7 +229,7 @@ func TestNonCanonicalRepoPathResolves(t *testing.T) {
 		filepath.Join(repo, "sub", ".."),
 		repo + string(filepath.Separator),
 	}
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == windowsOS {
 		base := filepath.Base(repo)
 		if upper := strings.ToUpper(base); upper != base && filepath.Base(repo) != upper {
 			variants = append(variants, filepath.Join(filepath.Dir(repo), upper))

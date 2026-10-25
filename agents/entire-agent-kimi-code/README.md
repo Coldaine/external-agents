@@ -1,6 +1,6 @@
 # Kimi Code for Entire
 
-Locally maintained in [MooseGooseConsulting/external-agents](https://github.com/MooseGooseConsulting/external-agents), branch `agent/kimi-code`. Tested with Kimi 2.3.2 and Entire 0.12.1 on Windows.
+Locally maintained in [MooseGooseConsulting/external-agents](https://github.com/MooseGooseConsulting/external-agents). Tested with Kimi 2.3.2 and Entire 0.12.1 on Windows.
 
 ## Install
 
@@ -8,19 +8,21 @@ From this directory, `go build -o entire-agent-kimi-code.exe ./cmd/entire-agent-
 
 In each repository, run `entire enable --agent kimi-code --local --skip-push-sessions` (or `entire agent add kimi-code` when Entire is already enabled). Verify the untracked `.entire/settings.local.json` enables `external_agents`, then run `entire agent list`. Hooks are global but dispatch only in Entire-enabled repositories. Start a fresh Kimi session.
 
-Nine managed rules use SessionStart, TurnStarted, Stop, StopFailure, Interrupt, PreCompact, SessionEnd, SubagentStart and SubagentStop. Stop is a valid native Kimi hook event, distinct from StopFailure and confirmed by the official Kimi Code hook documentation. TurnStarted is the only turn boundary and handles user and non-user turns. Child turns and stops are correlated using the wire log, so a foreground child cannot prematurely close its parent. Kimi 2.3.2's subagent hook payloads omit IDs; the adapter resolves the native subagent ID and parent tool call from `subagent.spawned` records.
+Ten managed rules use SessionStart, UserPromptSubmit, TurnStarted, Stop, StopFailure, Interrupt, PreCompact, SessionEnd, SubagentStart and SubagentStop. UserPromptSubmit owns user turns; TurnStarted owns non-user turns. User TurnStarted duplicates are ignored. Each rule calls `entire-agent-kimi-code dispatch-hook <name>`, which holds a per-session lock through the complete `entire hooks kimi-code <name>` process. This prevents overlapping lifecycle writes, including fast failures overtaking turn initialization. Commands have a bounded 25-second timeout inside Kimi's 30-second hook timeout; no daemon is required.
 
-## Lifecycle events
-
-SessionEnd fires only on a graceful close — ACP `session/close` (plus closing the ACP stdio session) or an interactive TUI close. A print-mode `kimi -p` process exit does not emit SessionEnd, so it is never inferred from process exit. StopFailure is captured from a turn whose model fails mid-run; `scripts/capture-kimi-lifecycle.py` takes that model from `KIMI_LIFECYCLE_FAILURE_MODEL` and skips the scenario with a clear message when unset, so no personal model alias is baked in; the failure run's stderr is redacted of the model value before reporting.
-
-## Lifecycle capture (existing-auth probe)
-
-`py -3 scripts/capture-kimi-lifecycle.py --output <raw-capture-dir>` drives a real ACP session against the installed Kimi CLI using existing authentication (credentials are never copied or printed). It temporarily appends a comment-delimited hook block to the global `config.toml` through a guarded sibling-temp atomic `os.replace`, with a fresh comparison immediately before each swap. `finally` restores the original bytes only when the file still matches the capture-time content; detected concurrent drift keeps the temporary hooks in place and fails loudly for manual reconciliation — it is never silently clobbered. A hard kill outside `finally` can leave the temporary hook block in place, to be removed manually. Because the hooks are global, capture temporarily affects every Kimi repository on the machine; Entire dispatch itself stays repository scoped. Raw captures land in a disposable directory; the `sanitize` and `sanitize-transcript` subcommands turn a raw capture into the checked-in fixtures under `testdata/` (dropping payload-heavy and environment-specific records such as `llm.*` requests, `profile.bind` and `changeNotifier.snapshot`).
+Child turns and stops are correlated using the wire log. Kimi 2.3.2's subagent hook payloads omit IDs; the adapter resolves native IDs and parent tool calls using spawn records and distinct prompt/response payloads. Ambiguous identical child payloads produce a diagnostic instead of assigning another child's identity. Foreground and two concurrent background children are live-tested, including separate transcripts, exact per-child token totals, and one parent start/end pair. Entire 0.12.1's external event bridge uses the combined worktree diff for each task's `files` list, so concurrent task file lists can overlap; the child transcript's structured Write/Edit paths remain separately extractable.
 
 ## Storage and capabilities
 
+PreCompact is an explicit no-op with a diagnostic on stderr: Kimi appends compaction records while retaining the original wire log. Emitting Entire's Compaction event would reset byte cursors and double-count historical prompts/tokens. Normal capture continues from its current raw byte offset after compaction. SessionEnd is emitted by interactive `/exit`; prompt-mode process exit does not emit it in Kimi 2.3.2.
+
 Native `$KIMI_CODE_HOME/sessions/.../wire.jsonl` and `state.json` are read-only. Byte-identical raw snapshots and restoration data live under ignored `.entire/metadata/kimi-code/`. Child snapshots use Entire's `<sessionId>/subagents/agent-<agentId>.jsonl` convention. Checkpoint compaction translates native prompts, assistant output, tool calls and results into Entire Transcript Format. Raw bytes remain available separately.
+
+Snapshots contain the complete-record prefix of the native bytes. A partially appended last record is deferred until the next snapshot, without advancing the cursor past it; completed records are never re-encoded.
+
+Entire 0.12.1's runtime condensation code supplies **line counts**, despite its external protocol describing byte offsets. Installation records this version's compatibility mode in `.entire/metadata/kimi-code/runtime.json`; the adapter translates those line positions to raw byte boundaries before parsing. Standalone protocol calls without that repository-local compatibility file retain byte-offset behavior. This prevents resumed checkpoints from counting earlier API calls again. Other Entire versions need their runtime cursor contract verified before claiming compatibility.
+
+`ENTIRE_KIMI_OFFSET_UNIT=bytes` or `lines` explicitly selects the mode at installation. The protocol test wrapper selects bytes and avoids probing a version-manager shim under the suite's fake HOME. Normal local installation probes the actual Entire version.
 
 Declared: hooks, transcript analysis, compact transcript, token calculation and subagent aggregation. Token accounting counts `usage.record` once per call and ignores duplicate `step.end` usage. No model-generated summary provider, daemon, ACP service or historical import.
 
@@ -28,16 +30,22 @@ Structured Write/Edit paths are attributed; arbitrary shell writes are not guess
 
 ## Verify
 
-`go test ./...` and `go vet ./...` cover captured payloads, raw bytes, Unicode/partial appends, token accounting, foreground child correlation, lifecycle edge mapping (Stop, StopFailure, Interrupt, PreCompact, SessionEnd), path confinement and config preservation. Pure tests set isolated homes. `.github/workflows/kimi-code.yml` runs the module suite and pinned upstream protocol tests on Windows, macOS and Linux without Kimi credentials, and CI's `test-windows-paths (kimi-code)` job runs the path-security and portability subset (`TestSessionIDsAndResumeCommand`, `TestGetSessionDirAndResolveAgreement`, `TestSessionIndexMalformedAndMultipleRecords`, `TestSessionIndexRejectsEscapingSessionDir`, `TestNonCanonicalRepoPathResolves`, `TestManagedPathConfinement`, `TestReadSessionRestorationAndFallback`, `TestRejectForeignSessionAndPathEscapes`, `TestChildTranscriptsConfinedAndSkipsNonJSONL`, `TestRecordsParseCRLFAndSkipMalformedLines`) on Windows.
+`go test ./...` and `go vet ./...` cover captured payloads, raw bytes, Unicode/partial appends, token accounting, foreground child correlation, path confinement and config preservation. Pure tests set isolated homes. `.github/workflows/kimi-code.yml` runs these and pinned upstream protocol tests on Windows, macOS and Linux without Kimi credentials.
 
-Run the shared compliance CLI **from a directory without go.mod**, with a fresh isolated `KIMI_CODE_HOME` and `--fixtures <absolute-path>/testdata/compliance.json`. Its launcher otherwise selects the current Go module and can produce a false green by running that module's tests instead of the compliance suite.
+Run `python scripts/verify-protocol.py <binary>` after installing the pinned upstream `external-agents-tests` CLI. The wrapper resolves semantic fixture paths, creates an isolated Kimi home and runs from a neutral directory. The upstream launcher otherwise selects the current Go module and can produce a false green by running that module's tests instead of the compliance suite.
 
-For a real authenticated local test: `py -3 scripts/smoke-kimi.py --output <evidence-directory>`. This uses existing authentication in place, creates a disposable repo, and proves Write → commit → checkpoint → raw and readable transcripts → token usage → real resumed Edit → second checkpoint. It never copies credentials. Agent/hooks must be installed before running. `py -3 scripts/capture-kimi-lifecycle.py --output <raw-capture-dir>` additionally captures real compaction, interrupt, failure and graceful-close hook payloads (see "Lifecycle capture" above); export `KIMI_LIFECYCLE_FAILURE_MODEL` to include the StopFailure scenario.
+For a real authenticated local test: `py -3 scripts/smoke-kimi.py --output <evidence-directory>`. This uses existing authentication in place, creates a disposable repo, and proves Write → commit → checkpoint → raw and readable transcripts → token usage → real resumed Edit → second checkpoint. It never copies credentials. Agent/hooks must already be installed. The inherited Unix/tmux harness also registers `KIMI_E2E=1 E2E_AGENT=kimi-code`.
 
-See `AGENT.md` for native schema research and captured lifecycle evidence.
+`py -3 scripts/smoke-failure.py` runs a real Kimi request against a loopback-only HTTP 400 provider in an isolated home, without authentication or production config changes. It asserts StopFailure closes the Entire turn. Interactive `/compact`, Escape, and `/exit` cover compaction, interruption and session end; `-p '/compact'` is ordinary model input and does not exercise compaction.
+
+`py -3 scripts/smoke-subagents.py --children 2 --output <directory>` proves concurrent background child capture. `py -3 scripts/capture-kimi-lifecycle.py --output <directory>` uses ACP to trigger real compaction, cancellation and session close, plus the isolated failure test. Its temporary diagnostic hooks use a private backup and remove only their own block afterward. Raw captures stay outside Git; the script's `sanitize` subcommand produces restricted fixtures.
+
+See `EVIDENCE.md` for executed results and limitations, and `AGENT.md` for native schema research.
 
 ## Config safety and removal
 
-Installation appends a comment-delimited block, retaining unrelated config bytes, takes a timestamped backup beside config.toml, and writes atomically. Windows backups and temporary config files get an explicit current-user-only DACL before secret-bearing data is written. Installation uses a lock and rejects concurrent edits or damaged markers. `are-hooks-installed` checks every rule.
+Installation appends a comment-delimited block, retaining unrelated config bytes, takes a timestamped backup beside config.toml, and writes atomically. Windows backups get an explicit current-user-only DACL before secret-bearing data is written. Replacement config files retain the original config's security descriptor; a new config starts private. Installation uses a lock and rejects concurrent edits or damaged markers. `are-hooks-installed` checks every rule.
 
 Run `entire-agent-kimi-code uninstall-hooks` to remove only the managed block. **This removes capture hooks globally**, affecting all repositories. Existing checkpoints remain. Remove the installed binary to stop discovery. Backups contain the original sensitive config; keep them private and outside Git.
+
+If a hook process is forcibly killed, its `.entire/metadata/kimi-code/<session>.hook-lock` can remain. Dispatch times out with the exact path instead of stealing a potentially live owner's lock. After confirming no hook command owns that session, remove that lock to recover capture.

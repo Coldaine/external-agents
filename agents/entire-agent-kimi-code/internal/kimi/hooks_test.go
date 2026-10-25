@@ -25,9 +25,10 @@ func backupsOf(home string) []string {
 	return m
 }
 
-func TestHookBlockDeclaresExactNineRulesIncludingTurnStarted(t *testing.T) {
+func TestHookBlockDeclaresExactTenSerializedRules(t *testing.T) {
 	want := []struct{ event, name string }{
 		{"SessionStart", "session-start"}, {"TurnStarted", "turn-started"},
+		{"UserPromptSubmit", "user-prompt-submit"},
 		{"Stop", "stop"}, {"StopFailure", "stop-failure"}, {"Interrupt", "interrupt"},
 		{"PreCompact", "pre-compact"}, {"SessionEnd", "session-end"},
 		{"SubagentStart", "subagent-start"}, {"SubagentStop", "subagent-stop"},
@@ -45,7 +46,7 @@ func TestHookBlockDeclaresExactNineRulesIncludingTurnStarted(t *testing.T) {
 	s := string(block)
 	last := -1
 	for _, w := range want {
-		line := fmt.Sprintf("event = %q\ncommand = %q\ntimeout = 30", w.event, "entire hooks kimi-code "+w.name)
+		line := fmt.Sprintf("event = %q\ncommand = %q\ntimeout = 30", w.event, "entire-agent-kimi-code dispatch-hook "+w.name)
 		i := strings.Index(s, line)
 		if i < 0 {
 			t.Fatalf("missing or malformed rule %s/%s", w.event, w.name)
@@ -136,7 +137,7 @@ func TestConcurrentInstallsSerializeThroughLock(t *testing.T) {
 	const racers = 8
 	errs := make([]error, racers)
 	var wg sync.WaitGroup
-	for i := 0; i < racers; i++ {
+	for i := range racers {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -240,10 +241,10 @@ func TestBackupCountContentAndProtection(t *testing.T) {
 	}
 	if fi, err := os.Stat(bs[0]); err != nil {
 		t.Fatal(err)
-	} else if runtime.GOOS != "windows" && fi.Mode().Perm() != 0600 {
+	} else if runtime.GOOS != windowsOS && fi.Mode().Perm() != 0600 {
 		t.Fatalf("backup is world-readable: %v", fi.Mode())
 	}
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == windowsOS {
 		out, err := exec.Command("icacls", bs[0]).CombinedOutput()
 		if err == nil && strings.Contains(string(out), "(I)") {
 			t.Fatalf("backup inherits ACL entries: %s", out)
@@ -358,7 +359,7 @@ func assertConfigExtended(t *testing.T, path string, original, descriptor []byte
 	if !bytes.HasSuffix(b, hookBlock()) {
 		t.Fatal("managed hook block missing after install")
 	}
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == windowsOS {
 		if now := savedDescriptor(t, path); !bytes.Equal(descriptor, now) {
 			t.Fatalf("install replaced the config security descriptor:\nbefore: %q\nafter:  %q", descriptor, now)
 		}
@@ -376,7 +377,7 @@ func TestInstallReinstallPreservesConfigSecurityAndUnrelatedBytes(t *testing.T) 
 	put(t, path, original)
 	a := New()
 	var descriptor []byte
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == windowsOS {
 		out, err := exec.Command("icacls", path).CombinedOutput()
 		if err != nil {
 			t.Fatalf("icacls on fixture config: %v: %s", err, out)
@@ -393,7 +394,7 @@ func TestInstallReinstallPreservesConfigSecurityAndUnrelatedBytes(t *testing.T) 
 
 	reinstalled := []byte("api_key = '" + installerSentinel + "'\nforeign = 'B'\n")
 	put(t, path, reinstalled)
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == windowsOS {
 		descriptor = savedDescriptor(t, path)
 	}
 	if n, err := a.InstallHooks(false, false); err != nil || n != len(hookRules) {
@@ -412,7 +413,7 @@ func TestInstallReinstallPreservesConfigSecurityAndUnrelatedBytes(t *testing.T) 
 		t.Fatal("second backup does not hold the pre-reinstall bytes")
 	}
 	for _, backup := range bs {
-		if runtime.GOOS == "windows" {
+		if runtime.GOOS == windowsOS {
 			out, err := exec.Command("icacls", backup).CombinedOutput()
 			if err != nil {
 				t.Fatalf("icacls on backup %s: %v: %s", backup, err, out)
@@ -469,7 +470,7 @@ func TestReplacementConsumesStagedTempFile(t *testing.T) {
 // still stand and the staged temp is gone. A fake powershell on PATH forces
 // the Windows descriptor-copy step to fail deterministically.
 func TestDescriptorCopyFailureLeavesConfigUntouched(t *testing.T) {
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != windowsOS {
 		t.Skip("descriptor copy guards the Windows install path")
 	}
 	_, home := setup(t)

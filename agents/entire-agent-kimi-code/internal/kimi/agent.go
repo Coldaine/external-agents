@@ -25,6 +25,7 @@ var hookRules = []struct {
 	Type        int
 }{
 	{"SessionStart", "session-start", 1}, {"TurnStarted", "turn-started", 2},
+	{"UserPromptSubmit", "user-prompt-submit", 2},
 	{"Stop", "stop", 3}, {"StopFailure", "stop-failure", 3}, {"Interrupt", "interrupt", 3},
 	{"PreCompact", "pre-compact", 4}, {"SessionEnd", "session-end", 5},
 	{"SubagentStart", "subagent-start", 6}, {"SubagentStop", "subagent-stop", 7},
@@ -48,7 +49,7 @@ func (a *Agent) GetSessionID(in *protocol.HookInputJSON) string {
 	return in.SessionID
 }
 
-var safeID = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9_.-]*$`)
+var safeID = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
 
 func validID(id string) bool {
 	return safeID.MatchString(id) && id != "." && id != ".." && len(id) < 240
@@ -109,9 +110,6 @@ func samePath(a, b string) bool {
 
 // Native resolution trusts only index records belonging to this repository and
 // contained inside Kimi's session root, including after symlink resolution.
-// Invalid records for the same id (foreign workDir, escaping or misnamed
-// session dir) are skipped in favor of the last valid record; an error is
-// returned only when no valid record remains.
 func nativeSession(id, repo string) (string, error) {
 	if !validID(id) {
 		return "", errors.New("invalid session id")
@@ -147,14 +145,14 @@ func nativeSession(id, repo string) (string, error) {
 		return found, nil
 	}
 	if foreign {
-		return "", errors.New("Kimi session belongs to another repository")
+		return "", errors.New("kimi session belongs to another repository")
 	}
 	if escapes {
-		return "", errors.New("Kimi session index escapes session store")
+		return "", errors.New("kimi session index escapes session store")
 	}
 	return "", errors.New("session not indexed by Kimi yet")
 }
-func atomicWrite(path string, data []byte, mode os.FileMode) error {
+func atomicWrite(path string, data []byte) error {
 	if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
 		return e
 	}
@@ -164,7 +162,7 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	}
 	name := f.Name()
 	defer os.Remove(name)
-	if e = f.Chmod(mode); e == nil {
+	if e = f.Chmod(0o600); e == nil {
 		_, e = f.Write(data)
 	}
 	if e == nil {
@@ -198,12 +196,13 @@ func snapshot(id, repo string) (string, error) {
 	if e != nil {
 		return "", e
 	}
+	data = completePrefix(data)
 	dir, _ := New().GetSessionDir(repo)
 	ref := New().ResolveSessionFile(dir, id)
 	if e = managedPath(ref); e != nil {
 		return "", e
 	}
-	if e = atomicWrite(ref, data, 0600); e != nil {
+	if e = atomicWrite(ref, data); e != nil {
 		return "", e
 	}
 	_ = os.Remove(ref + ".session.json")
@@ -211,6 +210,16 @@ func snapshot(id, repo string) (string, error) {
 		return "", e
 	}
 	return ref, nil
+}
+
+// Publish a consistent prefix. A concurrently appended partial record is
+// deferred until the next snapshot, so Entire never advances past it.
+func completePrefix(data []byte) []byte {
+	end := bytes.LastIndexByte(data, '\n')
+	if end < 0 {
+		return data[:0]
+	}
+	return data[:end+1]
 }
 func (a *Agent) ReadSession(in *protocol.HookInputJSON) (protocol.AgentSessionJSON, error) {
 	if in == nil || !validID(in.SessionID) {
@@ -248,14 +257,14 @@ func (a *Agent) WriteSession(s protocol.AgentSessionJSON) error {
 	if e := managedPath(s.SessionRef); e != nil {
 		return e
 	}
-	if e := atomicWrite(s.SessionRef, s.NativeData, 0600); e != nil {
+	if e := atomicWrite(s.SessionRef, s.NativeData); e != nil {
 		return e
 	}
 	b, e := json.Marshal(s)
 	if e != nil {
 		return e
 	}
-	return atomicWrite(s.SessionRef+".session.json", b, 0600)
+	return atomicWrite(s.SessionRef+".session.json", b)
 }
 func (a *Agent) ReadTranscript(ref string) ([]byte, error) {
 	i, e := os.Stat(ref)
@@ -283,6 +292,13 @@ func (a *Agent) ReassembleTranscript(chunks [][]byte) ([]byte, error) {
 	return bytes.Join(chunks, nil), nil
 }
 func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
+	if name == "pre-compact" {
+		// Kimi compacts model context by appending full_compaction records.
+		// Its wire log is not rewritten. Entire's Compaction event resets raw
+		// byte cursors, which would replay prompts and count old usage twice.
+		fmt.Fprintln(os.Stderr, "kimi-code: compaction leaves wire.jsonl append-only; retaining Entire byte cursors")
+		return nil, nil
+	}
 	kind := 0
 	for _, h := range hookRules {
 		if h.Name == name {
@@ -305,7 +321,7 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 	if !samePath(p.Cwd, protocol.RepoRoot()) {
 		return nil, errors.New("hook cwd does not match repository root")
 	}
-	if kind == 2 && isSubagentTurnOrigin(p) {
+	if name == "turn-started" && (isSubagentTurnOrigin(p) || p.OriginKind == "user" || p.Origin.Kind == "user") {
 		return nil, nil
 	}
 	ref, e := snapshot(p.ID, p.Cwd)
@@ -313,7 +329,10 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 		return nil, e
 	}
 	subs := subagentRecords(ref)
-	if kind == 3 && hasForegroundSubagent(subs) {
+	if name == "stop" && len(subs) > 0 && !mainReadyForStop(ref) {
+		return nil, nil
+	}
+	if kind == 3 && name != "stop" && hasForegroundSubagent(subs) {
 		return nil, nil
 	}
 	ev := &protocol.EventJSON{Type: kind, SessionID: p.ID, SessionRef: ref, Prompt: contentText(p.Prompt), Model: p.Model, Timestamp: time.Now().UTC().Format(time.RFC3339Nano), SubagentID: p.SubID, SubagentType: p.AgentType, TaskDescription: p.Description, ToolUseID: p.ToolID, Metadata: map[string]string{"hook": name}}
@@ -324,8 +343,17 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 		ev.SubagentType = p.Name
 	}
 	if kind == 6 || kind == 7 {
-		sub, ok := findSubagent(subs, p.Name, kind == 7)
-		if !ok {
+		query := subagentQuery{Name: p.Name, ID: ev.SubagentID, ToolID: p.ToolID, Done: kind == 7}
+		if kind == 6 {
+			query.Prompt = contentText(p.Prompt)
+		} else {
+			query.Response = p.Response
+		}
+		sub, matches := findSubagent(subs, query)
+		if matches > 1 {
+			return nil, errors.New("cannot uniquely correlate kimi subagent hook; refusing to assign another child's identity")
+		}
+		if matches == 0 {
 			return nil, nil
 		}
 		ev.SubagentID = sub.ID
@@ -336,26 +364,23 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 	if p.Reason != "" {
 		ev.Metadata["reason"] = p.Reason
 	}
+	if p.ErrorType != "" {
+		ev.Metadata["error_type"] = p.ErrorType
+	}
+	if p.ErrorMessage != "" {
+		ev.Metadata["error_message"] = p.ErrorMessage
+	}
 	if name == "stop-failure" || name == "interrupt" {
 		ev.Metadata["outcome"] = name
 	}
-	if name == "stop-failure" {
-		if p.ErrorType != "" {
-			ev.Metadata["error_type"] = p.ErrorType
-		}
-		if p.ErrorMessage != "" {
-			ev.Metadata["error_message"] = p.ErrorMessage
-		}
-	}
 	if kind == 1 {
-		if source, e := nativeSession(p.ID, p.Cwd); e == nil {
-			if state, e := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(source))), "state.json")); e == nil {
-				var s struct {
-					ForkedFrom string `json:"forkedFrom"`
-				}
-				if json.Unmarshal(state, &s) == nil {
-					ev.PreviousSessionID = s.ForkedFrom
-				}
+		source, _ := nativeSession(p.ID, p.Cwd)
+		if state, e := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(source))), "state.json")); e == nil {
+			var s struct {
+				ForkedFrom string `json:"forkedFrom"`
+			}
+			if json.Unmarshal(state, &s) == nil {
+				ev.PreviousSessionID = s.ForkedFrom
 			}
 		}
 	}
@@ -391,6 +416,7 @@ type hookPayload struct {
 	Origin       turnOrigin      `json:"origin"`
 	ErrorType    string          `json:"error_type"`
 	ErrorMessage string          `json:"error_message"`
+	Response     string          `json:"response"`
 }
 
 // isSubagentTurnOrigin suppresses child TurnStarted hooks. Only an explicit

@@ -18,6 +18,7 @@ func setup(t *testing.T) (string, string) {
 	home := t.TempDir()
 	t.Setenv("ENTIRE_REPO_ROOT", repo)
 	t.Setenv("KIMI_CODE_HOME", home)
+	t.Setenv("ENTIRE_KIMI_OFFSET_UNIT", "bytes")
 	return repo, home
 }
 func put(t *testing.T, path string, b []byte) {
@@ -91,7 +92,7 @@ func TestInstallerPreservesSecretAndForeignHooks(t *testing.T) {
 	put(t, path, original)
 	a := New()
 	n, e := a.InstallHooks(false, false)
-	if e != nil || n != 9 {
+	if e != nil || n != 10 {
 		t.Fatalf("install: %d %v", n, e)
 	}
 	first, _ := os.ReadFile(path)
@@ -160,7 +161,7 @@ func TestRejectForeignSessionAndPathEscapes(t *testing.T) {
 	}
 }
 func TestOffsetsPartialAppendsUnicodeAndUnknownRecords(t *testing.T) {
-	first := []byte("{\"type\":\"turn.prompt\",\"input\":[{\"type\":\"text\",\"text\":\"世界 🙂\"}]}\n")
+	first := []byte("{\"type\":\"turn.prompt\",\"input\":[{\"type\":\"text\",\"text\":\"Ã¤Â¸â€“Ã§â€¢Å’ Ã°Å¸â„¢â€š\"}]}\n")
 	tail := []byte("{\"type\":\"future-record\"")
 	b := append(append([]byte{}, first...), tail...)
 	rs, pos, e := records(b, 0)
@@ -215,6 +216,12 @@ func TestLifecycleEdgesMapAndDuplicateEventsNoOp(t *testing.T) {
 	p, _ := json.Marshal(map[string]any{"session_id": "session_test", "cwd": repo, "prompt": []any{map[string]string{"type": "text", "text": "hello"}}, "reason": "test", "subagent_id": "0"})
 	for _, h := range hookRules {
 		ev, e := New().ParseHook(h.Name, p)
+		if h.Name == "pre-compact" {
+			if ev != nil || e != nil {
+				t.Fatal("append-only compaction must retain offsets", ev, e)
+			}
+			continue
+		}
 		if h.Type == 6 || h.Type == 7 {
 			if ev != nil || e != nil {
 				t.Fatal("uncorrelated subagent must be no-op", ev, e)
@@ -225,11 +232,77 @@ func TestLifecycleEdgesMapAndDuplicateEventsNoOp(t *testing.T) {
 			t.Fatalf("%s: %v %v", h.Name, ev, e)
 		}
 	}
-	for _, name := range []string{"user-prompt-submit", "post-compact", "unknown"} {
+	for _, name := range []string{"post-compact", "unknown"} {
 		ev, e := New().ParseHook(name, p)
 		if ev != nil || e != nil {
 			t.Fatalf("duplicate %s wasn't no-op", name)
 		}
+	}
+	userTurn, _ := json.Marshal(map[string]any{"session_id": "session_test", "cwd": repo, "origin_kind": "user", "prompt": "duplicate"})
+	if ev, e := New().ParseHook("turn-started", userTurn); ev != nil || e != nil {
+		t.Fatal("duplicate user turn-started", ev, e)
+	}
+}
+
+func TestCapturedFailureRetainsErrorMetadata(t *testing.T) {
+	repo, home := setup(t)
+	nativeFixture(t, repo, home)
+	b, e := os.ReadFile("../../testdata/hooks/StopFailure.json")
+	if e != nil {
+		t.Fatal(e)
+	}
+	var payload map[string]any
+	if e = json.Unmarshal(b, &payload); e != nil {
+		t.Fatal(e)
+	}
+	payload["cwd"] = repo
+	b, _ = json.Marshal(payload)
+	ev, e := New().ParseHook("stop-failure", b)
+	if e != nil || ev == nil || ev.Metadata["error_type"] != "APIStatusError" || ev.Metadata["error_message"] != "400 Intentional Entire integration test failure" {
+		t.Fatalf("lost failure metadata: %v %v", ev, e)
+	}
+}
+
+func TestAppendOnlyCompactionDoesNotReplayUsage(t *testing.T) {
+	repo, home := setup(t)
+	path := nativeFixture(t, repo, home)
+	before, _ := os.ReadFile(path)
+	payload, _ := json.Marshal(map[string]string{"cwd": repo, "session_id": "session_test"})
+	ev, e := New().ParseHook("pre-compact", payload)
+	if e != nil || ev != nil {
+		t.Fatal("compaction reset event", ev, e)
+	}
+	after := append(append([]byte{}, before...), []byte("{\"type\":\"full_compaction.begin\"}\n{\"type\":\"full_compaction.end\"}\n{\"type\":\"usage.record\",\"usage\":{\"inputOther\":100,\"output\":2}}\n")...)
+	put(t, path, after)
+	u, e := tokenUsage(after, len(before))
+	if e != nil || u.Input != 100 || u.Output != 2 || u.Calls != 1 {
+		t.Fatalf("replayed pre-compaction usage: %+v %v", u, e)
+	}
+}
+
+func TestSnapshotDefersIncompleteNativeRecord(t *testing.T) {
+	repo, home := setup(t)
+	path := nativeFixture(t, repo, home)
+	complete, _ := os.ReadFile(path)
+	partial := append(append([]byte{}, complete...), []byte(`{"type":"future-record"`)...)
+	put(t, path, partial)
+	ref, e := snapshot("session_test", repo)
+	if e != nil {
+		t.Fatal(e)
+	}
+	got, _ := os.ReadFile(ref)
+	if !bytes.Equal(got, complete) {
+		t.Fatal("snapshot exposed an incomplete native record to Entire's line counter")
+	}
+	finished := append(append([]byte{}, partial...), []byte("}\n")...)
+	put(t, path, finished)
+	ref, e = snapshot("session_test", repo)
+	if e != nil {
+		t.Fatal(e)
+	}
+	got, _ = os.ReadFile(ref)
+	if !bytes.Equal(got, finished) {
+		t.Fatal("completed append was lost")
 	}
 }
 
@@ -314,6 +387,8 @@ func TestChildTurnStartedOriginVariantsSuppressConservatively(t *testing.T) {
 	repo, home := setup(t)
 	nativeFixture(t, repo, home)
 	suppressed := []map[string]any{
+		{"origin_kind": "user"},
+		{"origin": map[string]string{"kind": "user"}},
 		{"origin_name": "subagent"},
 		{"origin_kind": "subagent"},
 		{"origin": map[string]string{"name": "subagent"}},
@@ -333,12 +408,9 @@ func TestChildTurnStartedOriginVariantsSuppressConservatively(t *testing.T) {
 		}
 	}
 	kept := []map[string]any{
-		// The real captured main-turn shape: origin_kind "user".
-		{"origin_kind": "user"},
 		{"origin_kind": "task"},
 		{"origin_kind": "system"},
 		{"origin_name": "system"},
-		{"origin": map[string]string{"kind": "user"}},
 		{},
 	}
 	for _, origin := range kept {

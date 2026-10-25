@@ -2,7 +2,6 @@ package kimi
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,9 +9,12 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
+
+const windowsOS = "windows"
 
 const beginMarker = "\n# BEGIN entire-agent-kimi-code managed hooks\n"
 const endMarker = "# END entire-agent-kimi-code managed hooks\n"
@@ -21,7 +23,7 @@ func hookBlock() []byte {
 	var b strings.Builder
 	b.WriteString(beginMarker)
 	for _, h := range hookRules {
-		command, _ := json.Marshal("entire hooks kimi-code " + h.Name)
+		command := strconv.Quote("entire-agent-kimi-code dispatch-hook " + h.Name)
 		fmt.Fprintf(&b, "[[hooks]]\nevent = %q\ncommand = %s\ntimeout = 30\n\n", h.Event, command)
 	}
 	b.WriteString(endMarker)
@@ -46,7 +48,7 @@ func removeBlock(data []byte) ([]byte, error) {
 	return append(append([]byte{}, data[:start]...), data[end:]...), nil
 }
 func secureBackup(path string) error {
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != windowsOS {
 		return os.Chmod(path, 0600)
 	}
 	u, e := user.Current()
@@ -87,7 +89,7 @@ func updateConfig(install bool) (int, error) {
 	}
 	lock, e := os.OpenFile(path+".entire-lock", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if e != nil {
-		return 0, errors.New("Kimi config is locked by another Entire installer")
+		return 0, errors.New("kimi config is locked by another Entire installer")
 	}
 	defer os.Remove(lock.Name())
 	defer lock.Close()
@@ -116,8 +118,8 @@ func updateConfig(install bool) (int, error) {
 			return 0, e
 		}
 		if e = secureBackup(backup); e != nil {
-			f.Close()
-			os.Remove(backup)
+			_ = f.Close()
+			_ = os.Remove(backup)
 			return 0, e
 		}
 		_, e = f.Write(before)
@@ -134,7 +136,7 @@ func updateConfig(install bool) (int, error) {
 		return 0, e
 	}
 	if !bytes.Equal(current, before) {
-		return 0, errors.New("Kimi config changed concurrently; retry installation")
+		return 0, errors.New("kimi config changed concurrently; retry installation")
 	}
 	// Stage the replacement in a sibling temporary file so the config itself is
 	// never seen partially written: the temp is fully written and closed before
@@ -145,8 +147,10 @@ func updateConfig(install bool) (int, error) {
 	}
 	temp := f.Name()
 	defer os.Remove(temp)
-	f.Close()
-	if len(before) > 0 && runtime.GOOS == "windows" {
+	if e = f.Close(); e != nil {
+		return 0, e
+	}
+	if len(before) > 0 && runtime.GOOS == windowsOS {
 		// Renaming over the config would otherwise swap its security descriptor
 		// for the temp file's restricted one, silently dropping inherited grants
 		// such as SYSTEM or Administrators. Copy the config's descriptor onto
@@ -162,6 +166,13 @@ func updateConfig(install bool) (int, error) {
 	}
 	if e = stagedWrite(temp, after); e != nil {
 		return 0, e
+	}
+	current, e = os.ReadFile(path)
+	if e != nil && !os.IsNotExist(e) {
+		return 0, e
+	}
+	if !bytes.Equal(current, before) {
+		return 0, errors.New("kimi config changed concurrently; retry installation")
 	}
 	if e = os.Rename(temp, path); e != nil {
 		return 0, e
@@ -181,17 +192,23 @@ func stagedWrite(path string, data []byte) error {
 		return e
 	}
 	if _, e = f.Write(data); e != nil {
-		f.Close()
+		_ = f.Close()
 		return e
 	}
 	if e = f.Sync(); e != nil {
-		f.Close()
+		_ = f.Close()
 		return e
 	}
 	return f.Close()
 }
-func (a *Agent) InstallHooks(_ bool, _ bool) (int, error) { return updateConfig(true) }
-func (a *Agent) UninstallHooks() error                    { _, e := updateConfig(false); return e }
+func (a *Agent) InstallHooks(_ bool, _ bool) (int, error) {
+	n, e := updateConfig(true)
+	if e != nil {
+		return n, e
+	}
+	return n, configureRuntime()
+}
+func (a *Agent) UninstallHooks() error { _, e := updateConfig(false); return e }
 func (a *Agent) AreHooksInstalled() bool {
 	b, e := os.ReadFile(filepath.Join(kimiHome(), "config.toml"))
 	return e == nil && bytes.Count(b, []byte(beginMarker)) == 1 && bytes.Contains(b, hookBlock())

@@ -16,6 +16,8 @@ import (
 	"github.com/MooseGooseConsulting/external-agents/agents/entire-agent-kimi-code/internal/protocol"
 )
 
+const wireLoopEvent = "context.append_loop_event"
+
 type record struct {
 	Type    string          `json:"type"`
 	AgentID string          `json:"agentId"`
@@ -29,12 +31,13 @@ type record struct {
 		} `json:"origin"`
 	} `json:"message"`
 	Event struct {
-		Type   string          `json:"type"`
-		UUID   string          `json:"uuid"`
-		ToolID string          `json:"toolCallId"`
-		Name   string          `json:"name"`
-		Args   json.RawMessage `json:"args"`
-		Part   struct {
+		Type         string          `json:"type"`
+		FinishReason string          `json:"finishReason"`
+		UUID         string          `json:"uuid"`
+		ToolID       string          `json:"toolCallId"`
+		Name         string          `json:"name"`
+		Args         json.RawMessage `json:"args"`
+		Part         struct {
 			Type  string `json:"type"`
 			Text  string `json:"text"`
 			Think string `json:"think"`
@@ -82,7 +85,7 @@ func records(b []byte, offset int) ([]record, int, error) {
 	if offset >= len(b) {
 		return []record{}, len(b), nil
 	}
-	if offset > 0 && b[offset-1] != '\n' {
+	if offset > 0 && !bytes.HasSuffix(b[:offset], []byte{'\n'}) {
 		n := bytes.IndexByte(b[offset:], '\n')
 		if n < 0 {
 			return []record{}, offset, nil
@@ -116,7 +119,7 @@ func extractFiles(b []byte, offset int) ([]string, int, error) {
 	}
 	set := map[string]bool{}
 	for _, r := range rs {
-		if r.Type != "context.append_loop_event" || r.Event.Type != "tool.call" {
+		if r.Type != wireLoopEvent || r.Event.Type != "tool.call" {
 			continue
 		}
 		switch strings.ToLower(r.Event.Name) {
@@ -152,16 +155,20 @@ func (a *Agent) GetTranscriptPosition(path string) (int, error) {
 		return 0, e
 	}
 	_, pos, e := records(b, 0)
-	return pos, e
+	return outputOffset(b, pos), e
 }
 func (a *Agent) ExtractModifiedFiles(path string, offset int) ([]string, int, error) {
 	b, e := os.ReadFile(path)
 	if e != nil {
 		return nil, offset, e
 	}
-	files, pos, e := extractFiles(b, offset)
+	files, pos, e := extractFiles(b, inputByteOffset(b, offset))
 	if e != nil {
 		return nil, pos, e
+	}
+	pos = outputOffset(b, pos)
+	if filepath.Ext(path) != ".jsonl" {
+		return files, pos, nil
 	}
 	id := strings.TrimSuffix(filepath.Base(path), ".jsonl")
 	children, e := childTranscripts(filepath.Join(filepath.Dir(path), id, "subagents"))
@@ -193,7 +200,7 @@ func (a *Agent) ExtractPrompts(path string, offset int) ([]string, error) {
 	if e != nil {
 		return nil, e
 	}
-	rs, _, e := records(b, offset)
+	rs, _, e := records(b, inputByteOffset(b, offset))
 	if e != nil {
 		return nil, e
 	}
@@ -218,7 +225,7 @@ func (a *Agent) ExtractSummary(path string) (string, bool, error) {
 	}
 	var s strings.Builder
 	for _, r := range rs {
-		if r.Type == "context.append_loop_event" && r.Event.Type == "content.part" && r.Event.Part.Type == "text" {
+		if r.Type == wireLoopEvent && r.Event.Type == "content.part" && r.Event.Part.Type == "text" {
 			s.WriteString(r.Event.Part.Text)
 		}
 	}
@@ -264,11 +271,12 @@ func (a *Agent) HandleAggregate(command string, args []string, in io.Reader, out
 	if e != nil {
 		return e
 	}
-	files, _, e := extractFiles(b, *offset)
+	byteOffset := inputByteOffset(b, *offset)
+	files, _, e := extractFiles(b, byteOffset)
 	if e != nil {
 		return e
 	}
-	t, e := tokenUsage(b, *offset)
+	t, e := tokenUsage(b, byteOffset)
 	if e != nil {
 		return e
 	}
@@ -330,7 +338,7 @@ func (a *Agent) CompactTranscript(path string) (protocol.CompactTranscriptRespon
 	}
 	results := map[string]any{}
 	for _, r := range rs {
-		if r.Type == "context.append_loop_event" && r.Event.Type == "tool.result" {
+		if r.Type == wireLoopEvent && r.Event.Type == "tool.result" {
 			var value any
 			_ = json.Unmarshal(r.Event.Result.Output, &value)
 			status := "success"
@@ -341,12 +349,15 @@ func (a *Agent) CompactTranscript(path string) (protocol.CompactTranscriptRespon
 		}
 	}
 	var out bytes.Buffer
+	var encodeErr error
 	emit := func(r record, kind string, content any) {
 		line := map[string]any{"v": 1, "agent": "kimi-code", "cli_version": "2.3.2", "type": kind, "content": content}
 		if r.Time > 0 {
 			line["ts"] = time.UnixMilli(r.Time).UTC().Format(time.RFC3339Nano)
 		}
-		_ = json.NewEncoder(&out).Encode(line)
+		if encodeErr == nil {
+			encodeErr = json.NewEncoder(&out).Encode(line)
+		}
 	}
 	for _, r := range rs {
 		if r.Type == "turn.prompt" {
@@ -354,7 +365,7 @@ func (a *Agent) CompactTranscript(path string) (protocol.CompactTranscriptRespon
 				emit(r, "user", []any{map[string]any{"text": s}})
 			}
 		}
-		if r.Type != "context.append_loop_event" {
+		if r.Type != wireLoopEvent {
 			continue
 		}
 		switch r.Event.Type {
@@ -372,6 +383,9 @@ func (a *Agent) CompactTranscript(path string) (protocol.CompactTranscriptRespon
 			}
 			emit(r, "assistant", []any{tool})
 		}
+	}
+	if encodeErr != nil {
+		return protocol.CompactTranscriptResponse{}, encodeErr
 	}
 	if out.Len() == 0 {
 		return protocol.CompactTranscriptResponse{}, errors.New("no conversation content in wire transcript")
