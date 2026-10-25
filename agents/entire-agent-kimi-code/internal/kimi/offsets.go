@@ -25,6 +25,16 @@ func runtimeConfigPath() string {
 	return filepath.Join(dir, "runtime.json")
 }
 func configureRuntime() error {
+	if mode := os.Getenv("ENTIRE_KIMI_OFFSET_UNIT"); mode != "" {
+		if mode != "bytes" && mode != "lines" {
+			return fmt.Errorf("invalid ENTIRE_KIMI_OFFSET_UNIT %q", mode)
+		}
+		b, e := json.Marshal(runtimeCompatibility{EntireVersion: "explicit override", OffsetUnit: mode})
+		if e != nil {
+			return e
+		}
+		return atomicWrite(runtimeConfigPath(), append(b, '\n'))
+	}
 	bin, _ := exec.LookPath("entire")
 	if bin == "" {
 		return nil

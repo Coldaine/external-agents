@@ -18,6 +18,7 @@ func setup(t *testing.T) (string, string) {
 	home := t.TempDir()
 	t.Setenv("ENTIRE_REPO_ROOT", repo)
 	t.Setenv("KIMI_CODE_HOME", home)
+	t.Setenv("ENTIRE_KIMI_OFFSET_UNIT", "bytes")
 	return repo, home
 }
 func put(t *testing.T, path string, b []byte) {
