@@ -159,7 +159,34 @@ func (a *Agent) ExtractModifiedFiles(path string, offset int) ([]string, int, er
 	if e != nil {
 		return nil, offset, e
 	}
-	return extractFiles(b, offset)
+	files, pos, e := extractFiles(b, offset)
+	if e != nil {
+		return nil, pos, e
+	}
+	id := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+	children, e := childTranscripts(filepath.Join(filepath.Dir(path), id, "subagents"))
+	if e != nil {
+		return nil, pos, e
+	}
+	set := map[string]bool{}
+	for _, f := range files {
+		set[f] = true
+	}
+	for _, b := range children {
+		f, _, e := extractFiles(b, 0)
+		if e != nil {
+			return nil, pos, e
+		}
+		for _, p := range f {
+			set[p] = true
+		}
+	}
+	files = []string{}
+	for p := range set {
+		files = append(files, p)
+	}
+	sort.Strings(files)
+	return files, pos, nil
 }
 func (a *Agent) ExtractPrompts(path string, offset int) ([]string, error) {
 	b, e := os.ReadFile(path)
@@ -246,30 +273,12 @@ func (a *Agent) HandleAggregate(command string, args []string, in io.Reader, out
 		return e
 	}
 	if command != "calculate-tokens" && *dir != "" {
-		entries, e := os.ReadDir(*dir)
-		if e != nil && !os.IsNotExist(e) {
+		children, e := childTranscripts(*dir)
+		if e != nil {
 			return e
 		}
 		sub := tokens{}
-		seen := map[string]bool{}
-		for _, ent := range entries {
-			if !ent.IsDir() || !strings.HasPrefix(ent.Name(), "agent-") {
-				continue
-			}
-			path := filepath.Join(*dir, ent.Name(), "wire.jsonl")
-			canonicalPath, e := filepath.EvalSymlinks(path)
-			if e != nil {
-				continue
-			}
-			root, _ := canonical(*dir)
-			if !within(root, canonicalPath) || seen[canonicalPath] {
-				continue
-			}
-			seen[canonicalPath] = true
-			b, e := os.ReadFile(path)
-			if e != nil {
-				return e
-			}
+		for _, b := range children {
 			f, _, e := extractFiles(b, 0)
 			if e != nil {
 				return e
@@ -285,7 +294,10 @@ func (a *Agent) HandleAggregate(command string, args []string, in io.Reader, out
 			sub.Create += u.Create
 			sub.Calls += u.Calls
 		}
-		t.Sub = &sub
+		if sub.Calls > 0 {
+			t.Sub = &sub
+		}
+
 		t.Input += sub.Input
 		t.Output += sub.Output
 		t.Read += sub.Read

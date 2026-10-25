@@ -91,7 +91,15 @@ func canonical(p string) (string, error) {
 	if s, e := filepath.EvalSymlinks(p); e == nil {
 		return s, nil
 	}
-	return p, nil
+	parent := filepath.Dir(p)
+	if parent == p {
+		return p, nil
+	}
+	resolved, e := canonical(parent)
+	if e != nil {
+		return "", e
+	}
+	return filepath.Join(resolved, filepath.Base(p)), nil
 }
 func samePath(a, b string) bool {
 	a, _ = canonical(a)
@@ -163,7 +171,8 @@ func managedPath(ref string) error {
 	dir, _ := New().GetSessionDir(protocol.RepoRoot())
 	p, _ := canonical(ref)
 	root, _ := canonical(dir)
-	if !within(root, p) || filepath.Ext(p) != ".jsonl" {
+	repo, _ := canonical(protocol.RepoRoot())
+	if !within(repo, root) || !within(root, p) || filepath.Ext(p) != ".jsonl" {
 		return errors.New("session write outside Entire-owned store")
 	}
 	return nil
@@ -183,6 +192,10 @@ func snapshot(id, repo string) (string, error) {
 		return "", e
 	}
 	if e = atomicWrite(ref, data, 0600); e != nil {
+		return "", e
+	}
+	_ = os.Remove(ref + ".session.json")
+	if e = copySubagents(source, ref, id); e != nil {
 		return "", e
 	}
 	return ref, nil
@@ -279,6 +292,7 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 		Name        string          `json:"agent_name"`
 		Description string          `json:"description"`
 		ToolID      string          `json:"tool_use_id"`
+		OriginName  string          `json:"origin_name"`
 	}
 	if len(bytes.TrimSpace(b)) == 0 {
 		return nil, nil
@@ -292,9 +306,16 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 	if !samePath(p.Cwd, protocol.RepoRoot()) {
 		return nil, errors.New("hook cwd does not match repository root")
 	}
+	if kind == 2 && p.OriginName == "subagent" {
+		return nil, nil
+	}
 	ref, e := snapshot(p.ID, p.Cwd)
 	if e != nil {
 		return nil, e
+	}
+	subs := subagentRecords(ref)
+	if kind == 3 && hasForegroundSubagent(subs) {
+		return nil, nil
 	}
 	ev := &protocol.EventJSON{Type: kind, SessionID: p.ID, SessionRef: ref, Prompt: contentText(p.Prompt), Model: p.Model, Timestamp: time.Now().UTC().Format(time.RFC3339Nano), SubagentID: p.SubID, SubagentType: p.AgentType, TaskDescription: p.Description, ToolUseID: p.ToolID, Metadata: map[string]string{"hook": name}}
 	if ev.SubagentID == "" {
@@ -302,6 +323,16 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 	}
 	if ev.SubagentType == "" {
 		ev.SubagentType = p.Name
+	}
+	if kind == 6 || kind == 7 {
+		sub, ok := findSubagent(subs, p.Name, kind == 7)
+		if !ok {
+			return nil, nil
+		}
+		ev.SubagentID = sub.ID
+		ev.ToolUseID = sub.ToolID
+		ev.SubagentType = sub.Name
+		ev.TaskDescription = sub.Description
 	}
 	if p.Reason != "" {
 		ev.Metadata["reason"] = p.Reason
