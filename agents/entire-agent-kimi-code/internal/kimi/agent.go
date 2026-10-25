@@ -120,6 +120,7 @@ func nativeSession(id, repo string) (string, error) {
 		return "", fmt.Errorf("read Kimi session index: %w", e)
 	}
 	var found string
+	var foreign, escapes bool
 	for _, line := range bytes.Split(data, []byte{'\n'}) {
 		var r struct {
 			ID   string `json:"sessionId"`
@@ -130,18 +131,26 @@ func nativeSession(id, repo string) (string, error) {
 			continue
 		}
 		if !samePath(repo, r.Work) {
-			return "", errors.New("kimi session belongs to another repository")
+			foreign = true
+			continue
 		}
 		p, e := canonical(filepath.Join(r.Dir, "agents", "main", "wire.jsonl"))
 		if e != nil || !within(root, p) || filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(p)))) != id {
-			return "", errors.New("kimi session index escapes session store")
+			escapes = true
+			continue
 		}
 		found = p
 	}
-	if found == "" {
-		return "", errors.New("session not indexed by Kimi yet")
+	if found != "" {
+		return found, nil
 	}
-	return found, nil
+	if foreign {
+		return "", errors.New("kimi session belongs to another repository")
+	}
+	if escapes {
+		return "", errors.New("kimi session index escapes session store")
+	}
+	return "", errors.New("session not indexed by Kimi yet")
 }
 func atomicWrite(path string, data []byte) error {
 	if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
@@ -299,24 +308,7 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 	if kind == 0 {
 		return nil, nil
 	}
-	var p struct {
-		ID           string          `json:"session_id"`
-		Cwd          string          `json:"cwd"`
-		Prompt       json.RawMessage `json:"prompt"`
-		Model        string          `json:"model"`
-		Reason       string          `json:"reason"`
-		SubID        string          `json:"subagent_id"`
-		AgentID      string          `json:"agent_id"`
-		AgentType    string          `json:"subagent_type"`
-		Name         string          `json:"agent_name"`
-		Description  string          `json:"description"`
-		ToolID       string          `json:"tool_use_id"`
-		OriginName   string          `json:"origin_name"`
-		OriginKind   string          `json:"origin_kind"`
-		ErrorType    string          `json:"error_type"`
-		ErrorMessage string          `json:"error_message"`
-		Response     string          `json:"response"`
-	}
+	var p hookPayload
 	if len(bytes.TrimSpace(b)) == 0 {
 		return nil, nil
 	}
@@ -329,7 +321,7 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 	if !samePath(p.Cwd, protocol.RepoRoot()) {
 		return nil, errors.New("hook cwd does not match repository root")
 	}
-	if name == "turn-started" && (p.OriginName == "subagent" || p.OriginKind == "user") {
+	if name == "turn-started" && (isSubagentTurnOrigin(p) || p.OriginKind == "user" || p.Origin.Kind == "user") {
 		return nil, nil
 	}
 	ref, e := snapshot(p.ID, p.Cwd)
@@ -393,4 +385,48 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 		}
 	}
 	return ev, nil
+}
+
+// turnOrigin mirrors the origin markers a TurnStarted payload carries. Kimi
+// has captured the subagent marker as a flat "origin_name", as
+// "origin_kind" (the main user turn reports "user"), and as a nested
+// "origin" object whose own field spelling has not been pinned by a capture,
+// so every alias below is inspected.
+type turnOrigin struct {
+	Name       string `json:"name"`
+	Kind       string `json:"kind"`
+	OriginName string `json:"origin_name"`
+	OriginKind string `json:"origin_kind"`
+}
+
+type hookPayload struct {
+	ID           string          `json:"session_id"`
+	Cwd          string          `json:"cwd"`
+	Prompt       json.RawMessage `json:"prompt"`
+	Model        string          `json:"model"`
+	Reason       string          `json:"reason"`
+	SubID        string          `json:"subagent_id"`
+	AgentID      string          `json:"agent_id"`
+	AgentType    string          `json:"subagent_type"`
+	Name         string          `json:"agent_name"`
+	Description  string          `json:"description"`
+	ToolID       string          `json:"tool_use_id"`
+	OriginName   string          `json:"origin_name"`
+	OriginKind   string          `json:"origin_kind"`
+	Origin       turnOrigin      `json:"origin"`
+	ErrorType    string          `json:"error_type"`
+	ErrorMessage string          `json:"error_message"`
+	Response     string          `json:"response"`
+}
+
+// isSubagentTurnOrigin suppresses child TurnStarted hooks. Only an explicit
+// "subagent" marker suppresses: main task and system turns (which report
+// "user", a task kind, or no origin at all) must keep opening the turn.
+func isSubagentTurnOrigin(p hookPayload) bool {
+	for _, v := range []string{p.OriginName, p.OriginKind, p.Origin.Name, p.Origin.Kind, p.Origin.OriginName, p.Origin.OriginKind} {
+		if strings.EqualFold(v, "subagent") {
+			return true
+		}
+	}
+	return false
 }

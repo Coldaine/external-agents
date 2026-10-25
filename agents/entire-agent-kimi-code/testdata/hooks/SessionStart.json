@@ -4,6 +4,6 @@
   "cwd": "/test/repo",
   "client_type": "kimi_code_cli",
   "source": "startup",
-  "model": "kimi-code/k3.1-pro",
+  "model": "test-model",
   "profile": "agent"
 }

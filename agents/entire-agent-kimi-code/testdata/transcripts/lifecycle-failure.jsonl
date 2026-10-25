@@ -1,6 +1,5 @@
 {"type": "metadata", "protocol_version": "1.5", "created_at": 1792955483709}
-{"type": "runtime.set_binding", "workspaceId": "wd_<workspace>-kimi-lifecycle-kjclfu17_a4c6fa0fd572", "runtimeId": "local", "agentId": "main", "time": 1792955483716}
-{"type": "changeNotifier.snapshot", "agentId": "main", "agentsMdHash": null, "agentsMdFiles": {}, "skillsHash": "5727d59589a847ca7a7d2687e3f9cc8ef57e15f7fc1a72b21b2f99bfb55029c0", "subagentNames": ["plan", "agent", "coder", "explore"], "modelPool": {"defaultModel": "isoquant/glm-5.3-flash", "models": {"isoquant/glm-5.3-flash": ""}}, "time": 1792955483723}
+{"type": "runtime.set_binding", "workspaceId": "wd_<workspace>-kimi-lifecycle-repo", "runtimeId": "local", "agentId": "main", "time": 1792955483716}
 {"type": "permission.set_mode", "agentId": "main", "mode": "auto", "time": 1792955483724}
 {"type": "turn.prompt", "agentId": "main", "input": [{"type": "text", "text": "Reply with exactly LIFECYCLE_FAIL_OK. Do not use tools."}], "origin": {"kind": "user"}, "promptId": "msg_01M5T7K1PQFP8EXQ2A5G9M9XZ5", "turnId": 0, "time": 1792955483992}
 {"type": "context.append_message", "agentId": "main", "message": {"role": "user", "content": [{"type": "text", "text": "Reply with exactly LIFECYCLE_FAIL_OK. Do not use tools."}], "id": "msg_01M5T7K1PQFP8EXQ2A5G9M9XZ5", "toolCalls": [], "origin": {"kind": "user"}}, "time": 1792955483992}

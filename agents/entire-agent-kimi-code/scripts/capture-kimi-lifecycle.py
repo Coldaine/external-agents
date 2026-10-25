@@ -100,6 +100,7 @@ def sanitize_transcript_command(raw, fixture, repo):
         record = json.loads(line)
         kind = str(record.get("type", ""))
         allowed = (kind in ("metadata", "turn.prompt", "context.append_loop_event",
+                            "context.append_message", "context.apply_compaction", "context.undo", "context.clear",
                             "usage.record", "turn.cancel", "turn.ended", "prompt.aborted",
                             "prompt.completed", "agent.turn.started", "agent.turn.ended")
                    or kind.startswith(("subagent.", "full_compaction.", "turn.step.")))
@@ -308,15 +309,23 @@ def capture_acp(repo, out, env):
     return results
 
 
-def private_atomic_write(path, data):
+def private_atomic_write(path, data, expected=None):
     """Secure an empty sibling file before putting sensitive config bytes in it."""
     fd, name = tempfile.mkstemp(prefix=".entire-lifecycle-", dir=path.parent)
     try:
         if os.name == "nt":
-            output = subprocess.check_output(["whoami", "/user", "/fo", "csv", "/nh"], text=True)
-            sid = next(csv.reader(io.StringIO(output.strip())))[1]
-            subprocess.run(["icacls", name, "/inheritance:r", "/grant:r", f"*{sid}:(F)"],
-                           check=True, capture_output=True)
+            if expected is not None:
+                # The config keeps its original descriptor; backups stay private.
+                subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                    "$ErrorActionPreference='Stop'; $a=[IO.File]::GetAccessControl($env:ENTIRE_ACL_SOURCE); "
+                    "[IO.File]::SetAccessControl($env:ENTIRE_ACL_DESTINATION,$a)"],
+                    env=dict(os.environ,ENTIRE_ACL_SOURCE=str(path),ENTIRE_ACL_DESTINATION=name),
+                    check=True,capture_output=True)
+            else:
+                output = subprocess.check_output(["whoami", "/user", "/fo", "csv", "/nh"], text=True)
+                sid = next(csv.reader(io.StringIO(output.strip())))[1]
+                subprocess.run(["icacls", name, "/inheritance:r", "/grant:r", f"*{sid}:(F)"],
+                               check=True, capture_output=True)
         else:
             os.fchmod(fd, 0o600)
         with os.fdopen(fd, "wb") as target:
@@ -324,6 +333,8 @@ def private_atomic_write(path, data):
             target.write(data)
             target.flush()
             os.fsync(target.fileno())
+        if expected is not None and path.read_bytes() != expected:
+            raise RuntimeError("Config changed concurrently before replacement; preserving it")
         os.replace(name, path)
     finally:
         if fd >= 0:
@@ -369,7 +380,7 @@ def driver(args):
             raise RuntimeError("Config changed before capture setup; retry")
         backup = config.with_name(config.name + f".entire-lifecycle.{time.time_ns()}.bak")
         private_atomic_write(backup, original)
-        private_atomic_write(config, installed)
+        private_atomic_write(config, installed, expected=original)
         acp_results = capture_acp(repo, out, env)
         print("ACP scenario:", json.dumps(acp_results, indent=2))
 
@@ -410,7 +421,7 @@ def driver(args):
             current = config.read_bytes()
             block = addition.encode()
             if current.count(block) == 1:
-                private_atomic_write(config, current.replace(block, b"", 1))
+                private_atomic_write(config, current.replace(block, b"", 1), expected=current)
                 print("Temporary capture hooks removed; unrelated config preserved")
             elif current != original:
                 raise RuntimeError("Capture block changed concurrently; preserving config for reconciliation")

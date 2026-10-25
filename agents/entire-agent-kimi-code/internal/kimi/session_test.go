@@ -134,6 +134,73 @@ func TestSessionIndexMalformedAndMultipleRecords(t *testing.T) {
 	}
 }
 
+// TestSessionIndexSkipsInvalidRecordsForSameID covers regression: an earlier
+// record for the target id that is foreign, malformed, or escapes the session
+// store must not abort resolution when a later valid record for the same id
+// exists. Resolution keeps the last valid record and errors only when no
+// valid record remains.
+func TestSessionIndexSkipsInvalidRecordsForSameID(t *testing.T) {
+	repo, home := setup(t)
+	id := "session_skip"
+	valid := sessionTree(t, home, id, "{\"type\":\"valid\"}\n")
+	otherRepo := t.TempDir()
+	var idx bytes.Buffer
+	idx.Write(indexLine(t, id, valid, otherRepo))
+	idx.Write(indexLine(t, id, valid, repo))
+	put(t, filepath.Join(home, "session_index.jsonl"), idx.Bytes())
+	p, e := nativeSession(id, repo)
+	if e != nil {
+		t.Fatalf("foreign record blocked later valid record: %v", e)
+	}
+	if !samePath(p, filepath.Join(valid, "agents", "main", "wire.jsonl")) {
+		t.Fatalf("resolved %q", p)
+	}
+
+	// Invalid records before, between, and after a valid record: the valid
+	// record must still resolve and later invalid ones must not erase it.
+	idx.Reset()
+	idx.WriteString("not json\n")
+	// Escaping session dir pointing outside the store.
+	idx.Write(indexLine(t, id, filepath.Join(home, "escape", id), repo))
+	// Session dir named for another id inside the store.
+	idx.Write(indexLine(t, id, filepath.Join(home, "sessions", "wd", "not-the-id"), repo))
+	idx.Write(indexLine(t, id, valid, repo))
+	// Valid earlier, foreign later must not clear the found record either.
+	idx.Write(indexLine(t, id, valid, otherRepo))
+	put(t, filepath.Join(home, "session_index.jsonl"), idx.Bytes())
+	p, e = nativeSession(id, repo)
+	if e != nil {
+		t.Fatalf("invalid records aborted resolution: %v", e)
+	}
+	if !samePath(p, filepath.Join(valid, "agents", "main", "wire.jsonl")) {
+		t.Fatalf("resolved %q", p)
+	}
+
+	// With no valid record remaining, resolution must fail rather than fall
+	// through: foreign only.
+	idx.Reset()
+	idx.Write(indexLine(t, id, valid, otherRepo))
+	put(t, filepath.Join(home, "session_index.jsonl"), idx.Bytes())
+	if _, e = nativeSession(id, repo); e == nil {
+		t.Fatal("resolved a session with only a foreign workDir record")
+	}
+	// Escaping only.
+	idx.Reset()
+	idx.Write(indexLine(t, id, filepath.Join(home, "escape", id), repo))
+	put(t, filepath.Join(home, "session_index.jsonl"), idx.Bytes())
+	if _, e = nativeSession(id, repo); e == nil {
+		t.Fatal("resolved a session with only an escaping record")
+	}
+	// Foreign first, escaping second: still no valid record remains.
+	idx.Reset()
+	idx.Write(indexLine(t, id, valid, otherRepo))
+	idx.Write(indexLine(t, id, filepath.Join(home, "escape", id), repo))
+	put(t, filepath.Join(home, "session_index.jsonl"), idx.Bytes())
+	if _, e = nativeSession(id, repo); e == nil {
+		t.Fatal("resolved a session with no valid record")
+	}
+}
+
 func TestSessionIndexRejectsEscapingSessionDir(t *testing.T) {
 	repo, home := setup(t)
 	id := "session_escape"
@@ -162,7 +229,7 @@ func TestNonCanonicalRepoPathResolves(t *testing.T) {
 		filepath.Join(repo, "sub", ".."),
 		repo + string(filepath.Separator),
 	}
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == windowsOS {
 		base := filepath.Base(repo)
 		if upper := strings.ToUpper(base); upper != base && filepath.Base(repo) != upper {
 			variants = append(variants, filepath.Join(filepath.Dir(repo), upper))

@@ -241,10 +241,10 @@ func TestBackupCountContentAndProtection(t *testing.T) {
 	}
 	if fi, err := os.Stat(bs[0]); err != nil {
 		t.Fatal(err)
-	} else if runtime.GOOS != "windows" && fi.Mode().Perm() != 0600 {
+	} else if runtime.GOOS != windowsOS && fi.Mode().Perm() != 0600 {
 		t.Fatalf("backup is world-readable: %v", fi.Mode())
 	}
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == windowsOS {
 		out, err := exec.Command("icacls", bs[0]).CombinedOutput()
 		if err == nil && strings.Contains(string(out), "(I)") {
 			t.Fatalf("backup inherits ACL entries: %s", out)
@@ -332,4 +332,204 @@ func TestInstallUninstallEdgePreservation(t *testing.T) {
 			t.Fatal("duplicated managed block counted as installed")
 		}
 	})
+}
+
+func savedDescriptor(t *testing.T, path string) []byte {
+	t.Helper()
+	save := filepath.Join(t.TempDir(), "descriptor.acl")
+	if out, err := exec.Command("icacls", path, "/save", save).CombinedOutput(); err != nil {
+		t.Fatalf("icacls save of %s: %v: %s", path, err, out)
+	}
+	b, err := os.ReadFile(save)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func assertConfigExtended(t *testing.T, path string, original, descriptor []byte) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(b, original) {
+		t.Fatalf("unrelated config bytes were rewritten:\nbefore: %q\nafter:  %q", original, b)
+	}
+	if !bytes.HasSuffix(b, hookBlock()) {
+		t.Fatal("managed hook block missing after install")
+	}
+	if runtime.GOOS == windowsOS {
+		if now := savedDescriptor(t, path); !bytes.Equal(descriptor, now) {
+			t.Fatalf("install replaced the config security descriptor:\nbefore: %q\nafter:  %q", descriptor, now)
+		}
+	} else if fi, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if fi.Mode().Perm() != 0600 {
+		t.Fatalf("install changed config mode: %v", fi.Mode())
+	}
+}
+
+func TestInstallReinstallPreservesConfigSecurityAndUnrelatedBytes(t *testing.T) {
+	_, home := setup(t)
+	path := configPath(home)
+	original := []byte("api_key = '" + installerSentinel + "'\nforeign = 'A'\n")
+	put(t, path, original)
+	a := New()
+	var descriptor []byte
+	if runtime.GOOS == windowsOS {
+		out, err := exec.Command("icacls", path).CombinedOutput()
+		if err != nil {
+			t.Fatalf("icacls on fixture config: %v: %s", err, out)
+		}
+		if !strings.Contains(string(out), "(I)") {
+			t.Skip("fixture config carries no inherited ACL entries to preserve")
+		}
+		descriptor = savedDescriptor(t, path)
+	}
+	if n, err := a.InstallHooks(false, false); err != nil || n != len(hookRules) {
+		t.Fatalf("install: %d %v", n, err)
+	}
+	assertConfigExtended(t, path, original, descriptor)
+
+	reinstalled := []byte("api_key = '" + installerSentinel + "'\nforeign = 'B'\n")
+	put(t, path, reinstalled)
+	if runtime.GOOS == windowsOS {
+		descriptor = savedDescriptor(t, path)
+	}
+	if n, err := a.InstallHooks(false, false); err != nil || n != len(hookRules) {
+		t.Fatalf("reinstall: %d %v", n, err)
+	}
+	assertConfigExtended(t, path, reinstalled, descriptor)
+
+	bs := backupsOf(home)
+	if len(bs) != 2 {
+		t.Fatalf("backup count after install and reinstall: %d, want 2", len(bs))
+	}
+	if b, _ := os.ReadFile(bs[0]); !bytes.Equal(b, original) {
+		t.Fatal("first backup does not hold the pre-install bytes")
+	}
+	if b, _ := os.ReadFile(bs[1]); !bytes.Equal(b, reinstalled) {
+		t.Fatal("second backup does not hold the pre-reinstall bytes")
+	}
+	for _, backup := range bs {
+		if runtime.GOOS == windowsOS {
+			out, err := exec.Command("icacls", backup).CombinedOutput()
+			if err != nil {
+				t.Fatalf("icacls on backup %s: %v: %s", backup, err, out)
+			}
+			if strings.Contains(string(out), "(I)") {
+				t.Fatalf("backup %s inherits directory ACL entries: %s", backup, out)
+			}
+		} else if fi, err := os.Stat(backup); err != nil {
+			t.Fatal(err)
+		} else if fi.Mode().Perm() != 0600 {
+			t.Fatalf("backup is world-readable: %v", fi.Mode())
+		}
+	}
+}
+
+// Stale locks stay in place: the lock file records no holder identity, so a
+// lock left by a crashed installer must not be reclaimed on a PID or age
+// guess that could strand a live installer. Recovery stays manual removal,
+// after which TestLockConflictAndStaleLock shows the installer converges.
+func TestStaleLockIsReportedAndKeptForManualRecovery(t *testing.T) {
+	_, home := setup(t)
+	put(t, configPath(home), []byte("x = 1\n"))
+	lockBody := []byte("left by a crashed installer; no holder identity is recorded")
+	put(t, lockPath(home), lockBody)
+	if _, err := New().InstallHooks(false, false); err == nil || !strings.Contains(err.Error(), "locked") {
+		t.Fatalf("stale lock not reported: %v", err)
+	}
+	if b, err := os.ReadFile(lockPath(home)); err != nil || !bytes.Equal(b, lockBody) {
+		t.Fatalf("installer disturbed a stale lock it cannot attribute: %v %q", err, b)
+	}
+}
+
+func TestReplacementConsumesStagedTempFile(t *testing.T) {
+	_, home := setup(t)
+	put(t, configPath(home), []byte("x = 1\n"))
+	a := New()
+	if _, err := a.InstallHooks(false, false); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := filepath.Glob(filepath.Join(home, ".entire-config-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("install left staged temp files in the config directory: %v", stale)
+	}
+	if !a.AreHooksInstalled() {
+		t.Fatal("config not installed after staged replacement")
+	}
+}
+
+// The config must be replaced as a whole unit, not truncated in place: a
+// failed descriptor-copy step has to abort while the original config bytes
+// still stand and the staged temp is gone. A fake powershell on PATH forces
+// the Windows descriptor-copy step to fail deterministically.
+func TestDescriptorCopyFailureLeavesConfigUntouched(t *testing.T) {
+	if runtime.GOOS != windowsOS {
+		t.Skip("descriptor copy guards the Windows install path")
+	}
+	_, home := setup(t)
+	path := configPath(home)
+	original := []byte("api_key = '" + installerSentinel + "'\n")
+	put(t, path, original)
+	fake := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fake, "powershell.cmd"), []byte("@exit /b 1\r\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fake+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if _, err := New().InstallHooks(false, false); err == nil || !strings.Contains(err.Error(), "security descriptor") {
+		t.Fatalf("install without a working descriptor-copy step: %v", err)
+	}
+	if b, _ := os.ReadFile(path); !bytes.Equal(b, original) {
+		t.Fatal("failed descriptor copy mutated the config")
+	}
+	if len(backupsOf(home)) != 1 {
+		t.Fatalf("failed descriptor copy produced %d backups, want 1", len(backupsOf(home)))
+	}
+	if stale, _ := filepath.Glob(filepath.Join(home, ".entire-config-*")); len(stale) != 0 {
+		t.Fatalf("failed install left staged temp files: %v", stale)
+	}
+	if _, err := os.Stat(lockPath(home)); !os.IsNotExist(err) {
+		t.Fatal("failed install left a lock behind")
+	}
+}
+
+// stagedWrite must neither create nor partially fill a stage: the temp file is
+// staged beforehand, so an unexpected missing stage has to fail loudly rather
+// than reappear with the replacement bytes, and a present stage is overwritten
+// whole. Crash behavior after Sync is not asserted here: whether the synced
+// bytes survive a power cut is a property of the storage stack, not of this
+// function.
+func TestStagedWriteRequiresStagedTargetAndReplacesItWhole(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "not-staged.toml")
+	if err := stagedWrite(missing, []byte("x = 1\n")); err == nil {
+		t.Fatal("staged write accepted a target that was never staged")
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatal("failed staged write created a file")
+	}
+	path := filepath.Join(dir, "staged.toml")
+	stale := []byte("previous contents, longer than the replacement")
+	if err := os.WriteFile(path, stale, 0600); err != nil {
+		t.Fatal(err)
+	}
+	replacement := []byte("x = 2\n")
+	if err := stagedWrite(path, replacement); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(path); err != nil || !bytes.Equal(b, replacement) {
+		t.Fatalf("staged write left %q (%v), want %q", b, err, replacement)
+	}
+	if err := stagedWrite(path, nil); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); len(b) != 0 {
+		t.Fatalf("staged write truncated to %q, want an empty file", b)
+	}
 }

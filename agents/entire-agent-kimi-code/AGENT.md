@@ -7,7 +7,7 @@ Owner: MooseGooseConsulting/external-agents. Delivery targets local Windows; no 
 Verified 2026-10-25 with Kimi 2.3.2 and Entire 0.12.1. Protocol source: entireio/cli tag v0.12.1, docs/architecture/external-agent-protocol.md and cmd/entire/cli/agent/external/{types,external}.go.
 Native hooks: global KIMI_CODE_HOME/config.toml [[hooks]], JSON stdin, session_id and cwd. Prompt mode: kimi -p PROMPT (cannot combine --auto). Resume: kimi --session ID.
 Captured real SessionStart, UserPromptSubmit, TurnStarted and Stop in a disposable repository, using existing authentication without copying credentials. Original config restored byte-for-byte.
-UserPromptSubmit.prompt is a content-parts array; TurnStarted.prompt is text. Live failure testing found TurnStarted is asynchronous: a provider error can overtake TurnStart. Use synchronous UserPromptSubmit for user turns, and TurnStarted only for non-user non-subagent turns. Ten hooks are required.
+UserPromptSubmit.prompt is a content-parts array; TurnStarted.prompt is text. Live failure testing found overlapping hooks can let a provider error overtake completion of TurnStart. Use UserPromptSubmit for user turns, and TurnStarted only for non-user non-subagent turns. Ten hooks call the short-lived dispatch-hook command, which serializes the complete Entire hook process per session.
 SessionEnd did not fire in prompt mode. Interactive /exit was verified to fire SessionEnd; do not infer it from headless process exit.
 
 ## Native data
