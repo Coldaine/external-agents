@@ -1,0 +1,324 @@
+// Package kimi integrates Kimi's native wire log without modifying Kimi state.
+package kimi
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/MooseGooseConsulting/external-agents/agents/entire-agent-kimi-code/internal/protocol"
+)
+
+type Agent struct{}
+
+func New() *Agent { return &Agent{} }
+
+var hookRules = []struct {
+	Event, Name string
+	Type        int
+}{
+	{"SessionStart", "session-start", 1}, {"TurnStarted", "turn-started", 2},
+	{"Stop", "stop", 3}, {"StopFailure", "stop-failure", 3}, {"Interrupt", "interrupt", 3},
+	{"PreCompact", "pre-compact", 4}, {"SessionEnd", "session-end", 5},
+	{"SubagentStart", "subagent-start", 6}, {"SubagentStop", "subagent-stop", 7},
+}
+
+func (a *Agent) Info() protocol.InfoResponse {
+	names := []string{}
+	for _, h := range hookRules {
+		names = append(names, h.Name)
+	}
+	return protocol.InfoResponse{ProtocolVersion: 1, Name: "kimi-code", Type: "Kimi Code", Description: "Kimi Code native lifecycle and wire transcript integration", IsPreview: true, ProtectedDirs: []string{".kimi-code"}, HookNames: names, Capabilities: protocol.DeclaredCapabilities{Hooks: true, TranscriptAnalyzer: true, CompactTranscript: true, TokenCalculator: true, SubagentAwareExtractor: true, UsesTerminal: true}}
+}
+func (a *Agent) Detect() protocol.DetectResponse {
+	_, e := exec.LookPath("kimi")
+	return protocol.DetectResponse{Present: e == nil}
+}
+func (a *Agent) GetSessionID(in *protocol.HookInputJSON) string {
+	if in == nil {
+		return ""
+	}
+	return in.SessionID
+}
+
+var safeID = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9_.-]*$`)
+
+func validID(id string) bool {
+	return safeID.MatchString(id) && id != "." && id != ".." && len(id) < 240
+}
+func (a *Agent) FormatResumeCommand(id string) string {
+	if !validID(id) {
+		return ""
+	}
+	return "kimi --session " + id
+}
+func kimiHome() string {
+	if p := os.Getenv("KIMI_CODE_HOME"); p != "" {
+		return p
+	}
+	h, _ := os.UserHomeDir()
+	return filepath.Join(h, ".kimi-code")
+}
+func (a *Agent) GetSessionDir(repo string) (string, error) {
+	if repo == "" {
+		repo = protocol.RepoRoot()
+	}
+	p, e := filepath.Abs(filepath.Join(repo, ".entire", "metadata", "kimi-code"))
+	return p, e
+}
+func (a *Agent) ResolveSessionFile(dir, id string) string {
+	if !validID(id) {
+		return ""
+	}
+	return filepath.Join(dir, id+".jsonl")
+}
+func within(root, path string) bool {
+	r, e := filepath.Rel(root, path)
+	return e == nil && r != ".." && !strings.HasPrefix(r, ".."+string(filepath.Separator)) && !filepath.IsAbs(r)
+}
+func canonical(p string) (string, error) {
+	p, e := filepath.Abs(p)
+	if e != nil {
+		return "", e
+	}
+	if s, e := filepath.EvalSymlinks(p); e == nil {
+		return s, nil
+	}
+	return p, nil
+}
+func samePath(a, b string) bool {
+	a, _ = canonical(a)
+	b, _ = canonical(b)
+	return filepath.Clean(a) == filepath.Clean(b) || strings.EqualFold(filepath.Clean(a), filepath.Clean(b)) && os.PathSeparator == '\\'
+}
+
+// Native resolution trusts only index records belonging to this repository and
+// contained inside Kimi's session root, including after symlink resolution.
+func nativeSession(id, repo string) (string, error) {
+	if !validID(id) {
+		return "", errors.New("invalid session id")
+	}
+	root, _ := canonical(filepath.Join(kimiHome(), "sessions"))
+	data, e := os.ReadFile(filepath.Join(kimiHome(), "session_index.jsonl"))
+	if e != nil {
+		return "", fmt.Errorf("read Kimi session index: %w", e)
+	}
+	var found string
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		var r struct {
+			ID   string `json:"sessionId"`
+			Dir  string `json:"sessionDir"`
+			Work string `json:"workDir"`
+		}
+		if json.Unmarshal(line, &r) != nil || r.ID != id {
+			continue
+		}
+		if !samePath(repo, r.Work) {
+			return "", errors.New("Kimi session belongs to another repository")
+		}
+		p, e := canonical(filepath.Join(r.Dir, "agents", "main", "wire.jsonl"))
+		if e != nil || !within(root, p) || filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(p)))) != id {
+			return "", errors.New("Kimi session index escapes session store")
+		}
+		found = p
+	}
+	if found == "" {
+		return "", errors.New("session not indexed by Kimi yet")
+	}
+	return found, nil
+}
+func atomicWrite(path string, data []byte, mode os.FileMode) error {
+	if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
+		return e
+	}
+	f, e := os.CreateTemp(filepath.Dir(path), ".entire-write-*")
+	if e != nil {
+		return e
+	}
+	name := f.Name()
+	defer os.Remove(name)
+	if e = f.Chmod(mode); e == nil {
+		_, e = f.Write(data)
+	}
+	if e == nil {
+		e = f.Sync()
+	}
+	ce := f.Close()
+	if e != nil {
+		return e
+	}
+	if ce != nil {
+		return ce
+	}
+	return os.Rename(name, path)
+}
+func managedPath(ref string) error {
+	dir, _ := New().GetSessionDir(protocol.RepoRoot())
+	p, _ := canonical(ref)
+	root, _ := canonical(dir)
+	if !within(root, p) || filepath.Ext(p) != ".jsonl" {
+		return errors.New("session write outside Entire-owned store")
+	}
+	return nil
+}
+func snapshot(id, repo string) (string, error) {
+	source, e := nativeSession(id, repo)
+	if e != nil {
+		return "", e
+	}
+	data, e := os.ReadFile(source)
+	if e != nil {
+		return "", e
+	}
+	dir, _ := New().GetSessionDir(repo)
+	ref := New().ResolveSessionFile(dir, id)
+	if e = managedPath(ref); e != nil {
+		return "", e
+	}
+	if e = atomicWrite(ref, data, 0600); e != nil {
+		return "", e
+	}
+	return ref, nil
+}
+func (a *Agent) ReadSession(in *protocol.HookInputJSON) (protocol.AgentSessionJSON, error) {
+	if in == nil || !validID(in.SessionID) {
+		return protocol.AgentSessionJSON{}, errors.New("valid session_id required")
+	}
+	ref := in.SessionRef
+	if ref == "" {
+		dir, _ := a.GetSessionDir(protocol.RepoRoot())
+		ref = a.ResolveSessionFile(dir, in.SessionID)
+	}
+	if e := managedPath(ref); e != nil {
+		return protocol.AgentSessionJSON{}, e
+	}
+	// Restored sessions are Entire-owned, never passed off as native Kimi state.
+	if b, e := os.ReadFile(ref + ".session.json"); e == nil {
+		var s protocol.AgentSessionJSON
+		if json.Unmarshal(b, &s) == nil {
+			return s, nil
+		}
+	}
+	data, e := os.ReadFile(ref)
+	if e != nil {
+		return protocol.AgentSessionJSON{}, e
+	}
+	files, _, e := extractFiles(data, 0)
+	if e != nil {
+		return protocol.AgentSessionJSON{}, e
+	}
+	return protocol.AgentSessionJSON{SessionID: in.SessionID, AgentName: "kimi-code", RepoPath: protocol.RepoRoot(), SessionRef: ref, StartTime: in.Timestamp, NativeData: data, ModifiedFiles: files, NewFiles: []string{}, DeletedFiles: []string{}}, nil
+}
+func (a *Agent) WriteSession(s protocol.AgentSessionJSON) error {
+	if !validID(s.SessionID) {
+		return errors.New("invalid session id")
+	}
+	if e := managedPath(s.SessionRef); e != nil {
+		return e
+	}
+	if e := atomicWrite(s.SessionRef, s.NativeData, 0600); e != nil {
+		return e
+	}
+	b, e := json.Marshal(s)
+	if e != nil {
+		return e
+	}
+	return atomicWrite(s.SessionRef+".session.json", b, 0600)
+}
+func (a *Agent) ReadTranscript(ref string) ([]byte, error) {
+	i, e := os.Stat(ref)
+	if e != nil {
+		return nil, e
+	}
+	if !i.Mode().IsRegular() {
+		return nil, errors.New("transcript must be a regular file")
+	}
+	return os.ReadFile(ref)
+}
+func (a *Agent) ChunkTranscript(b []byte, n int) ([][]byte, error) {
+	if n <= 0 {
+		return nil, errors.New("max-size must be positive")
+	}
+	out := [][]byte{}
+	for len(b) > 0 {
+		size := min(n, len(b))
+		out = append(out, append([]byte{}, b[:size]...))
+		b = b[size:]
+	}
+	return out, nil
+}
+func (a *Agent) ReassembleTranscript(chunks [][]byte) ([]byte, error) {
+	return bytes.Join(chunks, nil), nil
+}
+func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
+	kind := 0
+	for _, h := range hookRules {
+		if h.Name == name {
+			kind = h.Type
+		}
+	}
+	if kind == 0 {
+		return nil, nil
+	}
+	var p struct {
+		ID          string          `json:"session_id"`
+		Cwd         string          `json:"cwd"`
+		Prompt      json.RawMessage `json:"prompt"`
+		Model       string          `json:"model"`
+		Reason      string          `json:"reason"`
+		SubID       string          `json:"subagent_id"`
+		AgentID     string          `json:"agent_id"`
+		AgentType   string          `json:"subagent_type"`
+		Name        string          `json:"agent_name"`
+		Description string          `json:"description"`
+		ToolID      string          `json:"tool_use_id"`
+	}
+	if len(bytes.TrimSpace(b)) == 0 {
+		return nil, nil
+	}
+	if e := json.Unmarshal(b, &p); e != nil {
+		return nil, e
+	}
+	if !validID(p.ID) || p.Cwd == "" {
+		return nil, nil
+	}
+	if !samePath(p.Cwd, protocol.RepoRoot()) {
+		return nil, errors.New("hook cwd does not match repository root")
+	}
+	ref, e := snapshot(p.ID, p.Cwd)
+	if e != nil {
+		return nil, e
+	}
+	ev := &protocol.EventJSON{Type: kind, SessionID: p.ID, SessionRef: ref, Prompt: contentText(p.Prompt), Model: p.Model, Timestamp: time.Now().UTC().Format(time.RFC3339Nano), SubagentID: p.SubID, SubagentType: p.AgentType, TaskDescription: p.Description, ToolUseID: p.ToolID, Metadata: map[string]string{"hook": name}}
+	if ev.SubagentID == "" {
+		ev.SubagentID = p.AgentID
+	}
+	if ev.SubagentType == "" {
+		ev.SubagentType = p.Name
+	}
+	if p.Reason != "" {
+		ev.Metadata["reason"] = p.Reason
+	}
+	if name == "stop-failure" || name == "interrupt" {
+		ev.Metadata["outcome"] = name
+	}
+	if kind == 1 {
+		source, _ := nativeSession(p.ID, p.Cwd)
+		if state, e := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(source))), "state.json")); e == nil {
+			var s struct {
+				ForkedFrom string `json:"forkedFrom"`
+			}
+			if json.Unmarshal(state, &s) == nil {
+				ev.PreviousSessionID = s.ForkedFrom
+			}
+		}
+	}
+	return ev, nil
+}

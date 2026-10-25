@@ -1,0 +1,145 @@
+package kimi
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"os/user"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"time"
+)
+
+const beginMarker = "\n# BEGIN entire-agent-kimi-code managed hooks\n"
+const endMarker = "# END entire-agent-kimi-code managed hooks\n"
+
+func hookBlock() []byte {
+	var b strings.Builder
+	b.WriteString(beginMarker)
+	for _, h := range hookRules {
+		command, _ := json.Marshal("entire hooks kimi-code " + h.Name)
+		fmt.Fprintf(&b, "[[hooks]]\nevent = %q\ncommand = %s\ntimeout = 30\n\n", h.Event, command)
+	}
+	b.WriteString(endMarker)
+	return []byte(b.String())
+}
+func removeBlock(data []byte) ([]byte, error) {
+	start := bytes.Index(data, []byte(beginMarker))
+	if start < 0 {
+		if bytes.Contains(data, []byte(endMarker)) {
+			return nil, errors.New("unmatched Entire hook marker")
+		}
+		return data, nil
+	}
+	end := bytes.Index(data[start:], []byte(endMarker))
+	if end < 0 {
+		return nil, errors.New("unterminated Entire hook block")
+	}
+	end += start + len(endMarker)
+	if bytes.Contains(data[end:], []byte(beginMarker)) {
+		return nil, errors.New("duplicate Entire hook blocks")
+	}
+	return append(append([]byte{}, data[:start]...), data[end:]...), nil
+}
+func secureBackup(path string) error {
+	if runtime.GOOS != "windows" {
+		return os.Chmod(path, 0600)
+	}
+	u, e := user.Current()
+	if e != nil {
+		return e
+	}
+	// Windows Go permission bits do not set a DACL. Restrict secret-bearing
+	// backups explicitly rather than claiming chmod protects them.
+	out, e := exec.Command("icacls", path, "/inheritance:r", "/grant:r", "*"+u.Uid+":(F)").CombinedOutput()
+	if e != nil {
+		return fmt.Errorf("restrict config backup permissions: %w (%d bytes diagnostics)", e, len(out))
+	}
+	return nil
+}
+func updateConfig(install bool) (int, error) {
+	path := filepath.Join(kimiHome(), "config.toml")
+	if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
+		return 0, e
+	}
+	lock, e := os.OpenFile(path+".entire-lock", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if e != nil {
+		return 0, errors.New("Kimi config is locked by another Entire installer")
+	}
+	defer os.Remove(lock.Name())
+	defer lock.Close()
+	before, e := os.ReadFile(path)
+	if e != nil && !os.IsNotExist(e) {
+		return 0, e
+	}
+	clean, e := removeBlock(before)
+	if e != nil {
+		return 0, e
+	}
+	after := clean
+	count := 0
+	if install {
+		after = append(append([]byte{}, clean...), hookBlock()...)
+		count = len(hookRules)
+	}
+	if bytes.Equal(before, after) {
+		return 0, nil
+	}
+	if len(before) > 0 {
+		backup := path + ".entire-agent-kimi-code." + time.Now().UTC().Format("20060102T150405.000000000") + ".bak"
+		// Secure an empty backup before writing any credentials into it.
+		f, e := os.OpenFile(backup, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if e != nil {
+			return 0, e
+		}
+		if e = secureBackup(backup); e != nil {
+			f.Close()
+			os.Remove(backup)
+			return 0, e
+		}
+		_, e = f.Write(before)
+		ce := f.Close()
+		if e != nil {
+			return 0, e
+		}
+		if ce != nil {
+			return 0, ce
+		}
+	}
+	current, e := os.ReadFile(path)
+	if e != nil && !os.IsNotExist(e) {
+		return 0, e
+	}
+	if !bytes.Equal(current, before) {
+		return 0, errors.New("Kimi config changed concurrently; retry installation")
+	}
+	// Keep the existing config file identity and ACL on Windows through a
+	// sibling temporary file secured before it receives secret-bearing data.
+	f, e := os.CreateTemp(filepath.Dir(path), ".entire-config-*")
+	if e != nil {
+		return 0, e
+	}
+	temp := f.Name()
+	defer os.Remove(temp)
+	f.Close()
+	if e = secureBackup(temp); e != nil {
+		return 0, e
+	}
+	if e = os.WriteFile(temp, after, 0600); e != nil {
+		return 0, e
+	}
+	if e = os.Rename(temp, path); e != nil {
+		return 0, e
+	}
+	return count, nil
+}
+func (a *Agent) InstallHooks(_ bool, _ bool) (int, error) { return updateConfig(true) }
+func (a *Agent) UninstallHooks() error                    { _, e := updateConfig(false); return e }
+func (a *Agent) AreHooksInstalled() bool {
+	b, e := os.ReadFile(filepath.Join(kimiHome(), "config.toml"))
+	return e == nil && bytes.Count(b, []byte(beginMarker)) == 1 && bytes.Contains(b, hookBlock())
+}
