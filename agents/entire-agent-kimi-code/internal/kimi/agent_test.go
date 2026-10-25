@@ -304,3 +304,100 @@ func TestSubagentCorrelationAndChildStops(t *testing.T) {
 		t.Fatal("main Stop missing after child completion", ev, e)
 	}
 }
+
+// Real TurnStarted payloads have carried the subagent marker as a flat
+// origin_name, as origin_kind, and as a nested origin object, while the
+// captured main user turn reports origin_kind "user". Only an explicit
+// "subagent" marker may suppress the child turn; main task and system turns
+// must keep opening the turn boundary.
+func TestChildTurnStartedOriginVariantsSuppressConservatively(t *testing.T) {
+	repo, home := setup(t)
+	nativeFixture(t, repo, home)
+	suppressed := []map[string]any{
+		{"origin_name": "subagent"},
+		{"origin_kind": "subagent"},
+		{"origin": map[string]string{"name": "subagent"}},
+		{"origin": map[string]string{"kind": "subagent"}},
+		{"origin": map[string]string{"origin_name": "subagent"}},
+		{"origin": map[string]string{"origin_kind": "subagent"}},
+	}
+	for _, origin := range suppressed {
+		payload := map[string]any{"session_id": "session_test", "cwd": repo}
+		for k, v := range origin {
+			payload[k] = v
+		}
+		p, _ := json.Marshal(payload)
+		ev, e := New().ParseHook("turn-started", p)
+		if e != nil || ev != nil {
+			t.Fatalf("child turn with %v reopened parent: %v %v", origin, ev, e)
+		}
+	}
+	kept := []map[string]any{
+		// The real captured main-turn shape: origin_kind "user".
+		{"origin_kind": "user"},
+		{"origin_kind": "task"},
+		{"origin_kind": "system"},
+		{"origin_name": "system"},
+		{"origin": map[string]string{"kind": "user"}},
+		{},
+	}
+	for _, origin := range kept {
+		payload := map[string]any{"session_id": "session_test", "cwd": repo}
+		for k, v := range origin {
+			payload[k] = v
+		}
+		p, _ := json.Marshal(payload)
+		ev, e := New().ParseHook("turn-started", p)
+		if e != nil || ev == nil || ev.Type != 2 {
+			t.Fatalf("main turn with %v lost its boundary: %v %v", origin, ev, e)
+		}
+	}
+}
+
+// A SessionStart whose session Kimi indexes under a foreign workDir must
+// fail resolution outright: previously a failed nativeSession lookup was
+// ignored and the fallback read a relative ./state.json from the process
+// working directory, which could forge PreviousSessionID from foreign state.
+func TestSessionStartWithForeignSessionNeverReadsLocalState(t *testing.T) {
+	repo, home := setup(t)
+	foreignDir := filepath.Join(home, "sessions", "wd_foreign", "session_foreign")
+	put(t, filepath.Join(foreignDir, "agents", "main", "wire.jsonl"), []byte("{}\n"))
+	idx, e := json.Marshal(map[string]string{"sessionId": "session_foreign", "sessionDir": foreignDir, "workDir": t.TempDir()})
+	if e != nil {
+		t.Fatal(e)
+	}
+	// Also drop a state.json where the buggy relative read would land
+	// (the process working directory is the package dir); the fixed path
+	// must not consult it because resolution fails first.
+	put(t, filepath.Join(foreignDir, "state.json"), []byte(`{"forkedFrom":"session_evil"}`))
+	f, err := os.Open("state.json")
+	if err == nil {
+		f.Close()
+		t.Fatal("state.json exists in process cwd; test assumption broken")
+	}
+	if e := os.WriteFile(filepath.Join(home, "session_index.jsonl"), append(idx, '\n'), 0600); e != nil {
+		t.Fatal(e)
+	}
+	p, _ := json.Marshal(map[string]any{"session_id": "session_foreign", "cwd": repo, "source": "resume"})
+	ev, e := New().ParseHook("session-start", p)
+	if e == nil || ev != nil {
+		t.Fatalf("foreign SessionStart must fail resolution, got %v %v", ev, e)
+	}
+	if !strings.Contains(e.Error(), "another repository") {
+		t.Fatalf("unexpected error: %v", e)
+	}
+}
+
+func TestSessionStartReadsForkedFromAfterSuccessfulResolution(t *testing.T) {
+	repo, home := setup(t)
+	nativeFixture(t, repo, home)
+	put(t, filepath.Join(home, "sessions", "wd_test", "session_test", "state.json"), []byte(`{"forkedFrom":"session_parent"}`))
+	p, _ := json.Marshal(map[string]any{"session_id": "session_test", "cwd": repo, "source": "resume"})
+	ev, e := New().ParseHook("session-start", p)
+	if e != nil || ev == nil || ev.Type != 1 {
+		t.Fatalf("session-start: %v %v", ev, e)
+	}
+	if ev.PreviousSessionID != "session_parent" {
+		t.Fatalf("PreviousSessionID = %q, want session_parent", ev.PreviousSessionID)
+	}
+}

@@ -8,7 +8,15 @@ From this directory, `go build -o entire-agent-kimi-code.exe ./cmd/entire-agent-
 
 In each repository, run `entire enable --agent kimi-code --local --skip-push-sessions` (or `entire agent add kimi-code` when Entire is already enabled). Verify the untracked `.entire/settings.local.json` enables `external_agents`, then run `entire agent list`. Hooks are global but dispatch only in Entire-enabled repositories. Start a fresh Kimi session.
 
-Nine managed rules use SessionStart, TurnStarted, Stop, StopFailure, Interrupt, PreCompact, SessionEnd, SubagentStart and SubagentStop. TurnStarted handles user and non-user turns. Child turns and stops are correlated using the wire log, so a foreground child cannot prematurely close its parent. Kimi 2.3.2's subagent hook payloads omit IDs; the adapter resolves the native subagent ID and parent tool call from `subagent.spawned` records.
+Nine managed rules use SessionStart, TurnStarted, Stop, StopFailure, Interrupt, PreCompact, SessionEnd, SubagentStart and SubagentStop. Stop is a valid native Kimi hook event, distinct from StopFailure and confirmed by the official Kimi Code hook documentation. TurnStarted is the only turn boundary and handles user and non-user turns. Child turns and stops are correlated using the wire log, so a foreground child cannot prematurely close its parent. Kimi 2.3.2's subagent hook payloads omit IDs; the adapter resolves the native subagent ID and parent tool call from `subagent.spawned` records.
+
+## Lifecycle events
+
+SessionEnd fires only on a graceful close — ACP `session/close` (plus closing the ACP stdio session) or an interactive TUI close. A print-mode `kimi -p` process exit does not emit SessionEnd, so it is never inferred from process exit. StopFailure is captured from a turn whose model fails mid-run; `scripts/capture-kimi-lifecycle.py` takes that model from `KIMI_LIFECYCLE_FAILURE_MODEL` and skips the scenario with a clear message when unset, so no personal model alias is baked in; the failure run's stderr is redacted of the model value before reporting.
+
+## Lifecycle capture (existing-auth probe)
+
+`py -3 scripts/capture-kimi-lifecycle.py --output <raw-capture-dir>` drives a real ACP session against the installed Kimi CLI using existing authentication (credentials are never copied or printed). It temporarily appends a comment-delimited hook block to the global `config.toml` through a guarded sibling-temp atomic `os.replace`, with a fresh comparison immediately before each swap. `finally` restores the original bytes only when the file still matches the capture-time content; detected concurrent drift keeps the temporary hooks in place and fails loudly for manual reconciliation — it is never silently clobbered. A hard kill outside `finally` can leave the temporary hook block in place, to be removed manually. Because the hooks are global, capture temporarily affects every Kimi repository on the machine; Entire dispatch itself stays repository scoped. Raw captures land in a disposable directory; the `sanitize` and `sanitize-transcript` subcommands turn a raw capture into the checked-in fixtures under `testdata/` (dropping payload-heavy and environment-specific records such as `llm.*` requests, `profile.bind` and `changeNotifier.snapshot`).
 
 ## Storage and capabilities
 
@@ -20,13 +28,13 @@ Structured Write/Edit paths are attributed; arbitrary shell writes are not guess
 
 ## Verify
 
-`go test ./...` and `go vet ./...` cover captured payloads, raw bytes, Unicode/partial appends, token accounting, foreground child correlation, path confinement and config preservation. Pure tests set isolated homes. `.github/workflows/kimi-code.yml` runs these and pinned upstream protocol tests on Windows, macOS and Linux without Kimi credentials.
+`go test ./...` and `go vet ./...` cover captured payloads, raw bytes, Unicode/partial appends, token accounting, foreground child correlation, lifecycle edge mapping (Stop, StopFailure, Interrupt, PreCompact, SessionEnd), path confinement and config preservation. Pure tests set isolated homes. `.github/workflows/kimi-code.yml` runs the module suite and pinned upstream protocol tests on Windows, macOS and Linux without Kimi credentials, and CI's `test-windows-paths (kimi-code)` job runs the path-security and portability subset (`TestSessionIDsAndResumeCommand`, `TestGetSessionDirAndResolveAgreement`, `TestSessionIndexMalformedAndMultipleRecords`, `TestSessionIndexRejectsEscapingSessionDir`, `TestNonCanonicalRepoPathResolves`, `TestManagedPathConfinement`, `TestReadSessionRestorationAndFallback`, `TestRejectForeignSessionAndPathEscapes`, `TestChildTranscriptsConfinedAndSkipsNonJSONL`, `TestRecordsParseCRLFAndSkipMalformedLines`) on Windows.
 
 Run the shared compliance CLI **from a directory without go.mod**, with a fresh isolated `KIMI_CODE_HOME` and `--fixtures <absolute-path>/testdata/compliance.json`. Its launcher otherwise selects the current Go module and can produce a false green by running that module's tests instead of the compliance suite.
 
-For a real authenticated local test: `py -3 scripts/smoke-kimi.py --output <evidence-directory>`. This uses existing authentication in place, creates a disposable repo, and proves Write → commit → checkpoint → raw and readable transcripts → token usage → real resumed Edit → second checkpoint. It never copies credentials. Agent/hooks must already be installed. The inherited Unix/tmux harness also registers `KIMI_E2E=1 E2E_AGENT=kimi-code`.
+For a real authenticated local test: `py -3 scripts/smoke-kimi.py --output <evidence-directory>`. This uses existing authentication in place, creates a disposable repo, and proves Write → commit → checkpoint → raw and readable transcripts → token usage → real resumed Edit → second checkpoint. It never copies credentials. Agent/hooks must be installed before running. `py -3 scripts/capture-kimi-lifecycle.py --output <raw-capture-dir>` additionally captures real compaction, interrupt, failure and graceful-close hook payloads (see "Lifecycle capture" above); export `KIMI_LIFECYCLE_FAILURE_MODEL` to include the StopFailure scenario.
 
-See `EVIDENCE.md` for executed results and limitations, and `AGENT.md` for native schema research.
+See `AGENT.md` for native schema research and captured lifecycle evidence.
 
 ## Config safety and removal
 

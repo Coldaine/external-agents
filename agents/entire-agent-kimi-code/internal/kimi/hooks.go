@@ -61,6 +61,25 @@ func secureBackup(path string) error {
 	}
 	return nil
 }
+func copySecurityDescriptor(source, destination string) error {
+	script := "$ErrorActionPreference = 'Stop'\n" +
+		"try {\n" +
+		"  $s = [IO.File]::GetAccessControl($env:ENTIRE_ACL_SOURCE)\n" +
+		"  [IO.File]::SetAccessControl($env:ENTIRE_ACL_DESTINATION, $s)\n" +
+		"} catch {\n" +
+		"  exit 1\n" +
+		"}\n" +
+		"exit 0"
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd.Env = append(os.Environ(),
+		"ENTIRE_ACL_SOURCE="+source,
+		"ENTIRE_ACL_DESTINATION="+destination)
+	out, e := cmd.CombinedOutput()
+	if e != nil {
+		return fmt.Errorf("preserve config security descriptor: %w (%d bytes diagnostics)", e, len(out))
+	}
+	return nil
+}
 func updateConfig(install bool) (int, error) {
 	path := filepath.Join(kimiHome(), "config.toml")
 	if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
@@ -117,8 +136,9 @@ func updateConfig(install bool) (int, error) {
 	if !bytes.Equal(current, before) {
 		return 0, errors.New("Kimi config changed concurrently; retry installation")
 	}
-	// Keep the existing config file identity and ACL on Windows through a
-	// sibling temporary file secured before it receives secret-bearing data.
+	// Stage the replacement in a sibling temporary file so the config itself is
+	// never seen partially written: the temp is fully written and closed before
+	// a single rename swaps it into place.
 	f, e := os.CreateTemp(filepath.Dir(path), ".entire-config-*")
 	if e != nil {
 		return 0, e
@@ -126,16 +146,49 @@ func updateConfig(install bool) (int, error) {
 	temp := f.Name()
 	defer os.Remove(temp)
 	f.Close()
-	if e = secureBackup(temp); e != nil {
+	if len(before) > 0 && runtime.GOOS == "windows" {
+		// Renaming over the config would otherwise swap its security descriptor
+		// for the temp file's restricted one, silently dropping inherited grants
+		// such as SYSTEM or Administrators. Copy the config's descriptor onto
+		// the freshly created temp while it is still empty: SetAccessControl
+		// silently no-ops against a restricted destination, and later secret
+		// bytes then land in a file protected exactly like the config itself.
+		// A failed copy aborts before the config is touched at all.
+		if e = copySecurityDescriptor(path, temp); e != nil {
+			return 0, e
+		}
+	} else if e = secureBackup(temp); e != nil {
 		return 0, e
 	}
-	if e = os.WriteFile(temp, after, 0600); e != nil {
+	if e = stagedWrite(temp, after); e != nil {
 		return 0, e
 	}
 	if e = os.Rename(temp, path); e != nil {
 		return 0, e
 	}
 	return count, nil
+}
+
+// stagedWrite fills an already-staged sibling temp file with the replacement
+// config bytes and syncs them to storage before the caller renames it into
+// place. The target is never created or silently extended: it is opened
+// without O_CREATE so a lost stage fails loudly, and the handle is synced and
+// closed before the rename, which on Windows cannot displace a file that a
+// live handle still holds open.
+func stagedWrite(path string, data []byte) error {
+	f, e := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0600)
+	if e != nil {
+		return e
+	}
+	if _, e = f.Write(data); e != nil {
+		f.Close()
+		return e
+	}
+	if e = f.Sync(); e != nil {
+		f.Close()
+		return e
+	}
+	return f.Close()
 }
 func (a *Agent) InstallHooks(_ bool, _ bool) (int, error) { return updateConfig(true) }
 func (a *Agent) UninstallHooks() error                    { _, e := updateConfig(false); return e }
