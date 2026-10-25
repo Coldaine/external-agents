@@ -151,10 +151,15 @@ func copySubagents(native, ref, id string) error {
 	return nil
 }
 func childTranscripts(dir string) ([][]byte, error) {
-	entries, e := os.ReadDir(dir)
-	if os.IsNotExist(e) {
+	// The subagents directory is optional and located by convention from the
+	// transcript path. A path that is missing, or that resolves under a
+	// non-directory (e.g. a transcript whose name is not ".jsonl"), simply has
+	// no children; ReadDir alone reports that as ENOTDIR on Unix but not on
+	// Windows, so stat the path to keep the behavior identical on both.
+	if info, e := os.Stat(dir); e != nil || !info.IsDir() {
 		return nil, nil
 	}
+	entries, e := os.ReadDir(dir)
 	if e != nil {
 		return nil, e
 	}

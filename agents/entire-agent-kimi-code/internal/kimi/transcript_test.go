@@ -196,6 +196,21 @@ func TestChildTranscriptsConfinedAndSkipsNonJSONL(t *testing.T) {
 	}
 }
 
+// The upstream analyzer suite passes a transcript named test-transcript.json;
+// deriving <basename>/subagents from it lands under a file, which must read as
+// "no subagent transcripts" rather than a directory error (ENOTDIR on Unix).
+func TestChildTranscriptsToleratesPathUnderFile(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(root, "test-transcript.json"), []byte(`{}`))
+	if none, e := childTranscripts(filepath.Join(root, "test-transcript.json", "subagents")); e != nil || none != nil {
+		t.Fatalf("path under file: %v %v", none, e)
+	}
+	files, _, e := New().ExtractModifiedFiles(filepath.Join(root, "test-transcript.json"), 0)
+	if e != nil || len(files) != 0 {
+		t.Fatalf("non-jsonl transcript: %v %v", files, e)
+	}
+}
+
 func TestExtractModifiedFilesDedupesMainAndChild(t *testing.T) {
 	root := t.TempDir()
 	main := filepath.Join(root, "sess.jsonl")
