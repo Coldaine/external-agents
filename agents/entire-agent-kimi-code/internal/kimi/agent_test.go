@@ -294,7 +294,7 @@ func TestSnapshotDefersIncompleteNativeRecord(t *testing.T) {
 	if !bytes.Equal(got, complete) {
 		t.Fatal("snapshot exposed an incomplete native record to Entire's line counter")
 	}
-	finished := append(partial, []byte("}\n")...)
+	finished := append(append([]byte{}, partial...), []byte("}\n")...)
 	put(t, path, finished)
 	ref, e = snapshot("session_test", repo)
 	if e != nil {
