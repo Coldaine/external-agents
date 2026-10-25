@@ -26,12 +26,13 @@ External agents communicate with Entire CLI via subcommands that accept and retu
 | [Kilo](agents/entire-agent-kilo/) | `agents/entire-agent-kilo/` | Implemented (preview) — hooks + transcript analysis + token calculation + compact transcripts |
 | [Goose](agents/entire-agent-goose/) | `agents/entire-agent-goose/` | Implemented (preview) — hooks + transcript analysis + token calculation + compact transcripts |
 | [Hermes Agent](agents/entire-agent-hermes/) | `agents/entire-agent-hermes/` | Implemented (preview) — sanitized observer hooks + transcript analysis + compact transcripts |
+| [Kimi Code](agents/entire-agent-kimi-code/) | `agents/entire-agent-kimi-code/` | Implemented — native wire capture, hooks, token accounting and concurrent subagent transcripts |
 
 See each agent's own README for setup and usage instructions.
 
 ## Enabling External Agents
 
-External agent discovery is opt-in. Once an `entire-agent-<name>` binary is on your `PATH`, set `external_agents: true` in the repo's `.entire/settings.json` so Entire scans for it:
+External agent discovery is opt-in. Once an `entire-agent-<name>` binary is on an absolute directory in your `PATH`, set `external_agents: true` in the repo's untracked `.entire/settings.local.json` so Entire scans for it:
 
 ```json
 {

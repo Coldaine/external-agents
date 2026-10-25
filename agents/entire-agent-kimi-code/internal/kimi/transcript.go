@@ -16,6 +16,8 @@ import (
 	"github.com/MooseGooseConsulting/external-agents/agents/entire-agent-kimi-code/internal/protocol"
 )
 
+const wireLoopEvent = "context.append_loop_event"
+
 type record struct {
 	Type    string          `json:"type"`
 	AgentID string          `json:"agentId"`
@@ -29,12 +31,13 @@ type record struct {
 		} `json:"origin"`
 	} `json:"message"`
 	Event struct {
-		Type   string          `json:"type"`
-		UUID   string          `json:"uuid"`
-		ToolID string          `json:"toolCallId"`
-		Name   string          `json:"name"`
-		Args   json.RawMessage `json:"args"`
-		Part   struct {
+		Type         string          `json:"type"`
+		FinishReason string          `json:"finishReason"`
+		UUID         string          `json:"uuid"`
+		ToolID       string          `json:"toolCallId"`
+		Name         string          `json:"name"`
+		Args         json.RawMessage `json:"args"`
+		Part         struct {
 			Type  string `json:"type"`
 			Text  string `json:"text"`
 			Think string `json:"think"`
@@ -116,7 +119,7 @@ func extractFiles(b []byte, offset int) ([]string, int, error) {
 	}
 	set := map[string]bool{}
 	for _, r := range rs {
-		if r.Type != "context.append_loop_event" || r.Event.Type != "tool.call" {
+		if r.Type != wireLoopEvent || r.Event.Type != "tool.call" {
 			continue
 		}
 		switch strings.ToLower(r.Event.Name) {
@@ -222,7 +225,7 @@ func (a *Agent) ExtractSummary(path string) (string, bool, error) {
 	}
 	var s strings.Builder
 	for _, r := range rs {
-		if r.Type == "context.append_loop_event" && r.Event.Type == "content.part" && r.Event.Part.Type == "text" {
+		if r.Type == wireLoopEvent && r.Event.Type == "content.part" && r.Event.Part.Type == "text" {
 			s.WriteString(r.Event.Part.Text)
 		}
 	}
@@ -335,7 +338,7 @@ func (a *Agent) CompactTranscript(path string) (protocol.CompactTranscriptRespon
 	}
 	results := map[string]any{}
 	for _, r := range rs {
-		if r.Type == "context.append_loop_event" && r.Event.Type == "tool.result" {
+		if r.Type == wireLoopEvent && r.Event.Type == "tool.result" {
 			var value any
 			_ = json.Unmarshal(r.Event.Result.Output, &value)
 			status := "success"
@@ -362,7 +365,7 @@ func (a *Agent) CompactTranscript(path string) (protocol.CompactTranscriptRespon
 				emit(r, "user", []any{map[string]any{"text": s}})
 			}
 		}
-		if r.Type != "context.append_loop_event" {
+		if r.Type != wireLoopEvent {
 			continue
 		}
 		switch r.Event.Type {

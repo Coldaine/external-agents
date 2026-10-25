@@ -24,5 +24,5 @@ Session helpers resolve native paths from the index with repository/containment 
 
 ## Test prerequisites and limits
 
-Real tests require kimi and entire on PATH, existing authenticated Kimi config and a disposable Git repository. Global hook installation affects all repositories, while Entire dispatch remains repository scoped. Pure protocol tests use isolated KIMI_CODE_HOME. Generic lifecycle harness currently assumes Unix/tmux; provide a native Windows smoke script as well.
+Real tests require kimi and entire on PATH, existing authenticated Kimi config and a disposable Git repository. Global hook installation affects all repositories, while Entire dispatch remains repository scoped. Pure protocol tests use isolated KIMI_CODE_HOME. The inherited lifecycle harness assumes Unix/tmux; scripts/smoke-kimi.py, smoke-failure.py and smoke-subagents.py provide native Windows verification. capture-kimi-lifecycle.py captures ACP lifecycle fixtures with bounded reads and restores temporary diagnostic hooks safely.
 Real compaction, Escape interruption, interactive session end and foreground subagent capture were exercised. StopFailure was captured with an isolated loopback-only HTTP 400 provider and no real credentials. See EVIDENCE.md for outcomes and remaining limits. No AI summary provider, background daemon or historical import.

@@ -49,7 +49,7 @@ func (a *Agent) GetSessionID(in *protocol.HookInputJSON) string {
 	return in.SessionID
 }
 
-var safeID = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9_.-]*$`)
+var safeID = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
 
 func validID(id string) bool {
 	return safeID.MatchString(id) && id != "." && id != ".." && len(id) < 240
@@ -315,6 +315,7 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 		OriginKind   string          `json:"origin_kind"`
 		ErrorType    string          `json:"error_type"`
 		ErrorMessage string          `json:"error_message"`
+		Response     string          `json:"response"`
 	}
 	if len(bytes.TrimSpace(b)) == 0 {
 		return nil, nil
@@ -336,7 +337,10 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 		return nil, e
 	}
 	subs := subagentRecords(ref)
-	if kind == 3 && hasForegroundSubagent(subs) {
+	if name == "stop" && len(subs) > 0 && !mainReadyForStop(ref) {
+		return nil, nil
+	}
+	if kind == 3 && name != "stop" && hasForegroundSubagent(subs) {
 		return nil, nil
 	}
 	ev := &protocol.EventJSON{Type: kind, SessionID: p.ID, SessionRef: ref, Prompt: contentText(p.Prompt), Model: p.Model, Timestamp: time.Now().UTC().Format(time.RFC3339Nano), SubagentID: p.SubID, SubagentType: p.AgentType, TaskDescription: p.Description, ToolUseID: p.ToolID, Metadata: map[string]string{"hook": name}}
@@ -347,8 +351,17 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 		ev.SubagentType = p.Name
 	}
 	if kind == 6 || kind == 7 {
-		sub, ok := findSubagent(subs, p.Name, kind == 7)
-		if !ok {
+		query := subagentQuery{Name: p.Name, ID: ev.SubagentID, ToolID: p.ToolID, Done: kind == 7}
+		if kind == 6 {
+			query.Prompt = contentText(p.Prompt)
+		} else {
+			query.Response = p.Response
+		}
+		sub, matches := findSubagent(subs, query)
+		if matches > 1 {
+			return nil, errors.New("cannot uniquely correlate kimi subagent hook; refusing to assign another child's identity")
+		}
+		if matches == 0 {
 			return nil, nil
 		}
 		ev.SubagentID = sub.ID

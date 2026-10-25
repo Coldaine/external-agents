@@ -21,7 +21,7 @@ func hookBlock() []byte {
 	var b strings.Builder
 	b.WriteString(beginMarker)
 	for _, h := range hookRules {
-		command := strconv.Quote("entire hooks kimi-code " + h.Name)
+		command := strconv.Quote("entire-agent-kimi-code dispatch-hook " + h.Name)
 		fmt.Fprintf(&b, "[[hooks]]\nevent = %q\ncommand = %s\ntimeout = 30\n\n", h.Event, command)
 	}
 	b.WriteString(endMarker)

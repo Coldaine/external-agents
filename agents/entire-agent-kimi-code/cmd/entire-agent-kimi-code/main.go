@@ -16,6 +16,11 @@ func main() {
 
 	var err error
 	switch os.Args[1] {
+	case "dispatch-hook":
+		if len(os.Args) != 3 {
+			fatalf("usage: entire-agent-kimi-code dispatch-hook <hook-name>")
+		}
+		err = kimi.DispatchHook(os.Args[2], os.Stdin, os.Stdout, os.Stderr)
 	case "calculate-tokens", "calculate-total-tokens", "extract-all-modified-files":
 		err = agent.HandleAggregate(os.Args[1], os.Args[2:], os.Stdin, os.Stdout)
 	case "info":

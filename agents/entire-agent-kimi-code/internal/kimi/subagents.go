@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type subagent struct {
@@ -16,24 +17,49 @@ type subagent struct {
 	Background  bool   `json:"runInBackground"`
 	Done        bool
 	Type        string `json:"type"`
+	Prompt      string
+	Response    string `json:"resultSummary"`
 }
 
 func subagentRecords(ref string) []subagent {
 	b, _ := os.ReadFile(ref)
+	data := [][]byte{b}
+	id := strings.TrimSuffix(filepath.Base(ref), ".jsonl")
+	children, _ := childTranscripts(filepath.Join(filepath.Dir(ref), id, "subagents"))
+	data = append(data, children...)
+	var lines [][]byte
+	for _, b := range data {
+		lines = append(lines, bytes.Split(b, []byte{'\n'})...)
+	}
+	prompts := map[string]string{}
+	for _, line := range lines {
+		var r record
+		if json.Unmarshal(line, &r) != nil || r.Type != wireLoopEvent || r.Event.Type != "tool.call" || r.Event.Name != "Agent" {
+			continue
+		}
+		var args struct {
+			Prompt json.RawMessage `json:"prompt"`
+		}
+		if json.Unmarshal(r.Event.Args, &args) == nil {
+			prompts[r.Event.ToolID] = contentText(args.Prompt)
+		}
+	}
 	out := []subagent{}
 	indices := map[string]int{}
-	for _, line := range bytes.Split(b, []byte{'\n'}) {
+	for _, line := range lines {
 		var s subagent
 		if json.Unmarshal(line, &s) != nil {
 			continue
 		}
 		switch s.Type {
 		case "subagent.spawned":
+			s.Prompt = prompts[s.ToolID]
 			indices[s.ID] = len(out)
 			out = append(out, s)
 		case "subagent.completed", "subagent.cancelled", "subagent.failed":
 			if i, ok := indices[s.ID]; ok {
 				out[i].Done = true
+				out[i].Response = s.Response
 			}
 		}
 	}
@@ -47,14 +73,49 @@ func hasForegroundSubagent(subs []subagent) bool {
 	}
 	return false
 }
-func findSubagent(subs []subagent, name string, done bool) (subagent, bool) {
-	for i := len(subs) - 1; i >= 0; i-- {
-		s := subs[i]
-		if s.Name == name && s.Done == done && s.Parent == "main" {
-			return s, true
+
+type subagentQuery struct {
+	Name, ID, ToolID, Prompt, Response string
+	Done                               bool
+}
+
+func findSubagent(subs []subagent, q subagentQuery) (subagent, int) {
+	var found subagent
+	count := 0
+	for _, s := range subs {
+		if q.Name != "" && s.Name != q.Name || q.ID != "" && s.ID != q.ID || q.ToolID != "" && s.ToolID != q.ToolID || q.Prompt != "" && s.Prompt != q.Prompt || q.Response != "" && s.Response != q.Response {
+			continue
+		}
+		if q.Done && !s.Done {
+			continue
+		}
+		if q.ID == "" && q.ToolID == "" && q.Prompt == "" && q.Response == "" && s.Done != q.Done {
+			continue
+		}
+		found = s
+		count++
+	}
+	return found, count
+}
+
+func mainReadyForStop(ref string) bool {
+	b, _ := os.ReadFile(ref)
+	rs, _, _ := records(b, 0)
+	ready := false
+	for _, r := range rs {
+		if r.Type == "turn.prompt" || r.Type == "turn.ended" {
+			ready = false
+		}
+		if r.Type == wireLoopEvent {
+			if r.Event.Type == "step.begin" {
+				ready = false
+			}
+			if r.Event.Type == "step.end" {
+				ready = r.Event.FinishReason == "end_turn" || r.Event.FinishReason == "stop"
+			}
 		}
 	}
-	return subagent{}, false
+	return ready
 }
 func copySubagents(native, ref, id string) error {
 	sourceDir := filepath.Dir(filepath.Dir(native))

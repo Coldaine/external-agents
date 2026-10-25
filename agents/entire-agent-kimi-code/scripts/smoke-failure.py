@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 if len(sys.argv)>1 and sys.argv[1]=='capture':
@@ -53,9 +54,18 @@ try:
     (root/'console.txt').write_bytes(result.stdout+result.stderr)
     capture=json.loads((root/'StopFailure.json').read_text())
     assert capture['hook_event_name']=='StopFailure',capture
-    logs=[json.loads(x) for x in (repo/'.entire/logs/entire.log').read_text().splitlines()]
+    # Observational hooks can outlive prompt-mode exit. Await the actual
+    # lifecycle transition, retaining a bounded failure if dispatch is broken.
+    deadline=time.monotonic()+15
+    while True:
+        logs=[json.loads(x) for x in (repo/'.entire/logs/entire.log').read_text().splitlines()]
+        if any(x.get('from')=='active' and x.get('to')=='idle' for x in logs):break
+        if time.monotonic()>=deadline:break
+        time.sleep(.05)
     assert any(x.get('event')=='TurnEnd' for x in logs),logs
     assert any(x.get('from')=='active' and x.get('to')=='idle' for x in logs),logs
+    state=json.loads((repo/'.git/entire-sessions'/f"{capture['session_id']}.json").read_text())
+    assert state['phase']=='idle',state
     print(json.dumps({'evidence':str(root),'kimi_exit':result.returncode,'hook':capture['hook_event_name'],'session':capture['session_id'],'entire_turn_closed':True},indent=2))
 finally:
     server.shutdown()

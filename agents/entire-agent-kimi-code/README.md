@@ -1,6 +1,6 @@
 # Kimi Code for Entire
 
-Locally maintained in [MooseGooseConsulting/external-agents](https://github.com/MooseGooseConsulting/external-agents), with runtime hardening on `codex/kimi-local` for integration into `agent/kimi-code`. Tested with Kimi 2.3.2 and Entire 0.12.1 on Windows.
+Locally maintained in [MooseGooseConsulting/external-agents](https://github.com/MooseGooseConsulting/external-agents). Tested with Kimi 2.3.2 and Entire 0.12.1 on Windows.
 
 ## Install
 
@@ -8,7 +8,9 @@ From this directory, `go build -o entire-agent-kimi-code.exe ./cmd/entire-agent-
 
 In each repository, run `entire enable --agent kimi-code --local --skip-push-sessions` (or `entire agent add kimi-code` when Entire is already enabled). Verify the untracked `.entire/settings.local.json` enables `external_agents`, then run `entire agent list`. Hooks are global but dispatch only in Entire-enabled repositories. Start a fresh Kimi session.
 
-Ten managed rules use SessionStart, UserPromptSubmit, TurnStarted, Stop, StopFailure, Interrupt, PreCompact, SessionEnd, SubagentStart and SubagentStop. UserPromptSubmit is synchronous and owns user turns; TurnStarted owns non-user turns. User TurnStarted duplicates are ignored, preventing fast-failure ordering races. Child turns and stops are correlated using the wire log, so a foreground child cannot prematurely close its parent. Kimi 2.3.2's subagent hook payloads omit IDs; the adapter resolves the native subagent ID and parent tool call from `subagent.spawned` records.
+Ten managed rules use SessionStart, UserPromptSubmit, TurnStarted, Stop, StopFailure, Interrupt, PreCompact, SessionEnd, SubagentStart and SubagentStop. UserPromptSubmit owns user turns; TurnStarted owns non-user turns. User TurnStarted duplicates are ignored. Each rule calls `entire-agent-kimi-code dispatch-hook <name>`, which holds a per-session lock through the complete `entire hooks kimi-code <name>` process. This prevents overlapping lifecycle writes, including fast failures overtaking turn initialization. Commands have a bounded 25-second timeout inside Kimi's 30-second hook timeout; no daemon is required.
+
+Child turns and stops are correlated using the wire log. Kimi 2.3.2's subagent hook payloads omit IDs; the adapter resolves native IDs and parent tool calls using spawn records and distinct prompt/response payloads. Ambiguous identical child payloads produce a diagnostic instead of assigning another child's identity. Foreground and two concurrent background children are live-tested, including separate transcripts, exact per-child token totals, and one parent start/end pair. Entire 0.12.1's external event bridge uses the combined worktree diff for each task's `files` list, so concurrent task file lists can overlap; the child transcript's structured Write/Edit paths remain separately extractable.
 
 ## Storage and capabilities
 
@@ -36,6 +38,8 @@ For a real authenticated local test: `py -3 scripts/smoke-kimi.py --output <evid
 
 `py -3 scripts/smoke-failure.py` runs a real Kimi request against a loopback-only HTTP 400 provider in an isolated home, without authentication or production config changes. It asserts StopFailure closes the Entire turn. Interactive `/compact`, Escape, and `/exit` cover compaction, interruption and session end; `-p '/compact'` is ordinary model input and does not exercise compaction.
 
+`py -3 scripts/smoke-subagents.py --children 2 --output <directory>` proves concurrent background child capture. `py -3 scripts/capture-kimi-lifecycle.py --output <directory>` uses ACP to trigger real compaction, cancellation and session close, plus the isolated failure test. Its temporary diagnostic hooks use a private backup and remove only their own block afterward. Raw captures stay outside Git; the script's `sanitize` subcommand produces restricted fixtures.
+
 See `EVIDENCE.md` for executed results and limitations, and `AGENT.md` for native schema research.
 
 ## Config safety and removal
@@ -43,3 +47,5 @@ See `EVIDENCE.md` for executed results and limitations, and `AGENT.md` for nativ
 Installation appends a comment-delimited block, retaining unrelated config bytes, takes a timestamped backup beside config.toml, and writes atomically. Windows backups and temporary config files get an explicit current-user-only DACL before secret-bearing data is written. Installation uses a lock and rejects concurrent edits or damaged markers. `are-hooks-installed` checks every rule.
 
 Run `entire-agent-kimi-code uninstall-hooks` to remove only the managed block. **This removes capture hooks globally**, affecting all repositories. Existing checkpoints remain. Remove the installed binary to stop discovery. Backups contain the original sensitive config; keep them private and outside Git.
+
+If a hook process is forcibly killed, its `.entire/metadata/kimi-code/<session>.hook-lock` can remain. Dispatch times out with the exact path instead of stealing a potentially live owner's lock. After confirming no hook command owns that session, remove that lock to recover capture.
