@@ -91,7 +91,7 @@ func TestInstallerPreservesSecretAndForeignHooks(t *testing.T) {
 	put(t, path, original)
 	a := New()
 	n, e := a.InstallHooks(false, false)
-	if e != nil || n != 9 {
+	if e != nil || n != 10 {
 		t.Fatalf("install: %d %v", n, e)
 	}
 	first, _ := os.ReadFile(path)
@@ -225,11 +225,15 @@ func TestLifecycleEdgesMapAndDuplicateEventsNoOp(t *testing.T) {
 			t.Fatalf("%s: %v %v", h.Name, ev, e)
 		}
 	}
-	for _, name := range []string{"user-prompt-submit", "post-compact", "unknown"} {
+	for _, name := range []string{"post-compact", "unknown"} {
 		ev, e := New().ParseHook(name, p)
 		if ev != nil || e != nil {
 			t.Fatalf("duplicate %s wasn't no-op", name)
 		}
+	}
+	userTurn, _ := json.Marshal(map[string]any{"session_id": "session_test", "cwd": repo, "origin_kind": "user", "prompt": "duplicate"})
+	if ev, e := New().ParseHook("turn-started", userTurn); ev != nil || e != nil {
+		t.Fatal("duplicate user turn-started", ev, e)
 	}
 }
 

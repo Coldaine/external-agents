@@ -1,6 +1,6 @@
 # Kimi Code for Entire
 
-Locally maintained in [MooseGooseConsulting/external-agents](https://github.com/MooseGooseConsulting/external-agents), branch `agent/kimi-code`. Tested with Kimi 2.3.2 and Entire 0.12.1 on Windows.
+Locally maintained in [MooseGooseConsulting/external-agents](https://github.com/MooseGooseConsulting/external-agents), with runtime hardening on `codex/kimi-local` for integration into `agent/kimi-code`. Tested with Kimi 2.3.2 and Entire 0.12.1 on Windows.
 
 ## Install
 
@@ -8,7 +8,7 @@ From this directory, `go build -o entire-agent-kimi-code.exe ./cmd/entire-agent-
 
 In each repository, run `entire enable --agent kimi-code --local --skip-push-sessions` (or `entire agent add kimi-code` when Entire is already enabled). Verify the untracked `.entire/settings.local.json` enables `external_agents`, then run `entire agent list`. Hooks are global but dispatch only in Entire-enabled repositories. Start a fresh Kimi session.
 
-Nine managed rules use SessionStart, TurnStarted, Stop, StopFailure, Interrupt, PreCompact, SessionEnd, SubagentStart and SubagentStop. TurnStarted handles user and non-user turns. Child turns and stops are correlated using the wire log, so a foreground child cannot prematurely close its parent. Kimi 2.3.2's subagent hook payloads omit IDs; the adapter resolves the native subagent ID and parent tool call from `subagent.spawned` records.
+Ten managed rules use SessionStart, UserPromptSubmit, TurnStarted, Stop, StopFailure, Interrupt, PreCompact, SessionEnd, SubagentStart and SubagentStop. UserPromptSubmit is synchronous and owns user turns; TurnStarted owns non-user turns. User TurnStarted duplicates are ignored, preventing fast-failure ordering races. Child turns and stops are correlated using the wire log, so a foreground child cannot prematurely close its parent. Kimi 2.3.2's subagent hook payloads omit IDs; the adapter resolves the native subagent ID and parent tool call from `subagent.spawned` records.
 
 ## Storage and capabilities
 
@@ -22,9 +22,11 @@ Structured Write/Edit paths are attributed; arbitrary shell writes are not guess
 
 `go test ./...` and `go vet ./...` cover captured payloads, raw bytes, Unicode/partial appends, token accounting, foreground child correlation, path confinement and config preservation. Pure tests set isolated homes. `.github/workflows/kimi-code.yml` runs these and pinned upstream protocol tests on Windows, macOS and Linux without Kimi credentials.
 
-Run the shared compliance CLI **from a directory without go.mod**, with a fresh isolated `KIMI_CODE_HOME` and `--fixtures <absolute-path>/testdata/compliance.json`. Its launcher otherwise selects the current Go module and can produce a false green by running that module's tests instead of the compliance suite.
+Run `python scripts/verify-protocol.py <binary>` after installing the pinned upstream `external-agents-tests` CLI. The wrapper resolves semantic fixture paths, creates an isolated Kimi home and runs from a neutral directory. The upstream launcher otherwise selects the current Go module and can produce a false green by running that module's tests instead of the compliance suite.
 
 For a real authenticated local test: `py -3 scripts/smoke-kimi.py --output <evidence-directory>`. This uses existing authentication in place, creates a disposable repo, and proves Write → commit → checkpoint → raw and readable transcripts → token usage → real resumed Edit → second checkpoint. It never copies credentials. Agent/hooks must already be installed. The inherited Unix/tmux harness also registers `KIMI_E2E=1 E2E_AGENT=kimi-code`.
+
+`py -3 scripts/smoke-failure.py` runs a real Kimi request against a loopback-only HTTP 400 provider in an isolated home, without authentication or production config changes. It asserts StopFailure closes the Entire turn. Interactive `/compact`, Escape, and `/exit` cover compaction, interruption and session end; `-p '/compact'` is ordinary model input and does not exercise compaction.
 
 See `EVIDENCE.md` for executed results and limitations, and `AGENT.md` for native schema research.
 

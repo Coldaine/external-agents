@@ -25,6 +25,7 @@ var hookRules = []struct {
 	Type        int
 }{
 	{"SessionStart", "session-start", 1}, {"TurnStarted", "turn-started", 2},
+	{"UserPromptSubmit", "user-prompt-submit", 2},
 	{"Stop", "stop", 3}, {"StopFailure", "stop-failure", 3}, {"Interrupt", "interrupt", 3},
 	{"PreCompact", "pre-compact", 4}, {"SessionEnd", "session-end", 5},
 	{"SubagentStart", "subagent-start", 6}, {"SubagentStop", "subagent-stop", 7},
@@ -293,6 +294,7 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 		Description string          `json:"description"`
 		ToolID      string          `json:"tool_use_id"`
 		OriginName  string          `json:"origin_name"`
+		OriginKind  string          `json:"origin_kind"`
 	}
 	if len(bytes.TrimSpace(b)) == 0 {
 		return nil, nil
@@ -306,7 +308,7 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 	if !samePath(p.Cwd, protocol.RepoRoot()) {
 		return nil, errors.New("hook cwd does not match repository root")
 	}
-	if kind == 2 && p.OriginName == "subagent" {
+	if name == "turn-started" && (p.OriginName == "subagent" || p.OriginKind == "user") {
 		return nil, nil
 	}
 	ref, e := snapshot(p.ID, p.Cwd)

@@ -60,6 +60,8 @@ run('git', 'add', 'proof.txt')
 run('git', 'commit', '-m', 'verify resumed Kimi checkpoint')
 resumed = json.loads(run('entire', 'checkpoint', 'explain', 'HEAD', '--json'))
 assert resumed['sessions'][0]['session_id'] == sid
+resume_output = run('entire', 'session', 'resume', 'kimi-smoke')
+assert f'kimi --session {sid}'.encode() in resume_output, resume_output
 chunks = json.loads(subprocess.run(['entire-agent-kimi-code', 'chunk-transcript', '--max-size', '31'], input=transcript, capture_output=True, check=True).stdout)
 joined = subprocess.run(['entire-agent-kimi-code', 'reassemble-transcript'], input=json.dumps(chunks).encode(), capture_output=True, check=True).stdout
 assert joined == transcript
@@ -68,6 +70,7 @@ assert joined == transcript
 (out/'transcript.jsonl').write_bytes(transcript)
 (out/'compact.txt').write_bytes(compact)
 (out/'console.txt').write_bytes(console)
+(out/'entire-resume.txt').write_bytes(resume_output)
 summary = {'repo': str(repo), 'kimi_version': run('kimi','--version').decode().strip(), 'entire_version': run('entire','version').decode().strip(), 'checkpoint': checkpoint['checkpoint_id'], 'session': sid, 'resumed_checkpoint': resumed['checkpoint_id'], 'transcript_sha256': hashlib.sha256(transcript).hexdigest(), 'checks': ['real Write','checkpoint metadata','prompt/tool/assistant transcript','token usage','byte chunk roundtrip','real resumed Edit']}
 (out/'result.json').write_text(json.dumps(summary, indent=2))
 print(json.dumps(summary, indent=2))
