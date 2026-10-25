@@ -1,0 +1,9 @@
+{
+  "hook_event_name": "SessionStart",
+  "session_id": "session_probe",
+  "cwd": "/test/repo",
+  "client_type": "kimi_code_cli",
+  "source": "startup",
+  "model": "kimi-code/k3.1-pro",
+  "profile": "agent"
+}
