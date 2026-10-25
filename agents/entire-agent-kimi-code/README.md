@@ -16,6 +16,8 @@ PreCompact is an explicit no-op with a diagnostic on stderr: Kimi appends compac
 
 Native `$KIMI_CODE_HOME/sessions/.../wire.jsonl` and `state.json` are read-only. Byte-identical raw snapshots and restoration data live under ignored `.entire/metadata/kimi-code/`. Child snapshots use Entire's `<sessionId>/subagents/agent-<agentId>.jsonl` convention. Checkpoint compaction translates native prompts, assistant output, tool calls and results into Entire Transcript Format. Raw bytes remain available separately.
 
+Snapshots contain the complete-record prefix of the native bytes. A partially appended last record is deferred until the next snapshot, without advancing the cursor past it; completed records are never re-encoded.
+
 Entire 0.12.1's runtime condensation code supplies **line counts**, despite its external protocol describing byte offsets. Installation records this version's compatibility mode in `.entire/metadata/kimi-code/runtime.json`; the adapter translates those line positions to raw byte boundaries before parsing. Standalone protocol calls without that repository-local compatibility file retain byte-offset behavior. This prevents resumed checkpoints from counting earlier API calls again. Other Entire versions need their runtime cursor contract verified before claiming compatibility.
 
 `ENTIRE_KIMI_OFFSET_UNIT=bytes` or `lines` explicitly selects the mode at installation. The protocol test wrapper selects bytes and avoids probing a version-manager shim under the suite's fake HOME. Normal local installation probes the actual Entire version.

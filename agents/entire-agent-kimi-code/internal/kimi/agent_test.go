@@ -280,6 +280,32 @@ func TestAppendOnlyCompactionDoesNotReplayUsage(t *testing.T) {
 	}
 }
 
+func TestSnapshotDefersIncompleteNativeRecord(t *testing.T) {
+	repo, home := setup(t)
+	path := nativeFixture(t, repo, home)
+	complete, _ := os.ReadFile(path)
+	partial := append(append([]byte{}, complete...), []byte(`{"type":"future-record"`)...)
+	put(t, path, partial)
+	ref, e := snapshot("session_test", repo)
+	if e != nil {
+		t.Fatal(e)
+	}
+	got, _ := os.ReadFile(ref)
+	if !bytes.Equal(got, complete) {
+		t.Fatal("snapshot exposed an incomplete native record to Entire's line counter")
+	}
+	finished := append(partial, []byte("}\n")...)
+	put(t, path, finished)
+	ref, e = snapshot("session_test", repo)
+	if e != nil {
+		t.Fatal(e)
+	}
+	got, _ = os.ReadFile(ref)
+	if !bytes.Equal(got, finished) {
+		t.Fatal("completed append was lost")
+	}
+}
+
 func TestSubagentCorrelationAndChildStops(t *testing.T) {
 	repo, home := setup(t)
 	path := nativeFixture(t, repo, home)

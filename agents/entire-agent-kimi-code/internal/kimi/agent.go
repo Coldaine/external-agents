@@ -187,6 +187,7 @@ func snapshot(id, repo string) (string, error) {
 	if e != nil {
 		return "", e
 	}
+	data = completePrefix(data)
 	dir, _ := New().GetSessionDir(repo)
 	ref := New().ResolveSessionFile(dir, id)
 	if e = managedPath(ref); e != nil {
@@ -200,6 +201,16 @@ func snapshot(id, repo string) (string, error) {
 		return "", e
 	}
 	return ref, nil
+}
+
+// Publish a consistent prefix. A concurrently appended partial record is
+// deferred until the next snapshot, so Entire never advances past it.
+func completePrefix(data []byte) []byte {
+	end := bytes.LastIndexByte(data, '\n')
+	if end < 0 {
+		return data[:0]
+	}
+	return data[:end+1]
 }
 func (a *Agent) ReadSession(in *protocol.HookInputJSON) (protocol.AgentSessionJSON, error) {
 	if in == nil || !validID(in.SessionID) {
