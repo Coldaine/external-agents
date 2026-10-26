@@ -51,9 +51,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.tar.gz dist/checksums.txt \
-            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes \
-            --title "entire-agent-kimi-code ${GITHUB_REF_NAME##*/}"
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null; then
+            gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.tar.gz dist/checksums.txt \
+              --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes \
+              --title "entire-agent-kimi-code ${GITHUB_REF_NAME##*/}"
+          fi
 
   verify-release:
     name: verify-release (linux amd64)
@@ -95,10 +97,11 @@ jobs:
             ls -1 >&2
             exit 1
           fi
-          tar -xzf "${archives[0]}" entire-agent-kimi-code
-          go version -m entire-agent-kimi-code | tee "$RUNNER_TEMP/go-version-m.txt"
+          mkdir "$RUNNER_TEMP/host-bin"
+          tar -xzf "${archives[0]}" -C "$RUNNER_TEMP/host-bin" entire-agent-kimi-code
+          go version -m "$RUNNER_TEMP/host-bin/entire-agent-kimi-code" | tee "$RUNNER_TEMP/go-version-m.txt"
           grep -q 'github.com/MooseGooseConsulting/external-agents/agents/entire-agent-kimi-code' \
             "$RUNNER_TEMP/go-version-m.txt"
 
       - name: Re-verify downloaded release with the packaging verifier
-        run: python agents/entire-agent-kimi-code/scripts/verify-release.py --dist "$RUNNER_TEMP/release"
+        run: python agents/entire-agent-kimi-code/scripts/verify-release.py --dist "$RUNNER_TEMP/release" --expected-version "${GITHUB_REF_NAME##*/}"
