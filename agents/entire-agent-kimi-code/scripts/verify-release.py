@@ -28,8 +28,8 @@ CHECKSUMS_NAME = "checksums.txt"
 ARCH_OS = ("linux", "darwin", "windows")
 ARCH_ARCH = ("amd64", "arm64")
 CHECKSUM_HASH = re.compile(r"^[0-9a-f]{64}$")
-# GoReleaser also writes its resolved configuration and JSON indexes at the dist root.
-ROOT_EXTRA_ALLOWLIST = {"artifacts.json", "config.yaml", "metadata.json"}
+# GoReleaser also writes its resolved configuration, changelog, and JSON indexes at the dist root.
+ROOT_EXTRA_ALLOWLIST = {"artifacts.json", "CHANGELOG.md", "config.yaml", "metadata.json"}
 HOST_TIMEOUT_SECONDS = 60
 
 

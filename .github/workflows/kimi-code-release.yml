@@ -31,7 +31,9 @@ jobs:
 
       - name: Resolve semantic version from the nested module tag
         id: version
-        run: echo "version=${GITHUB_REF_NAME##*/}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "version=${GITHUB_REF_NAME##*/}" >> "$GITHUB_OUTPUT"
+          git tag "${GITHUB_REF_NAME##*/}" "$GITHUB_SHA"
 
       - name: Build release packages with GoReleaser
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
