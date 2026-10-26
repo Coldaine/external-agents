@@ -29,14 +29,29 @@ jobs:
           go test -count=1 ./...
           go vet ./...
 
-      - name: Publish with GoReleaser
+      - name: Resolve semantic version from the nested module tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME##*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release packages with GoReleaser
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.version }}
         with:
           distribution: goreleaser
           version: v2.12.7
-          args: release --clean --config .goreleaser.kimi-code.yaml
+          args: release --clean --skip=publish --config .goreleaser.kimi-code.yaml
+
+      - name: Verify packages before publication
+        run: python agents/entire-agent-kimi-code/scripts/verify-release.py --dist dist --expected-version "${GITHUB_REF_NAME##*/}"
+
+      - name: Publish archives to the nested module tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.tar.gz dist/checksums.txt \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes \
+            --title "entire-agent-kimi-code ${GITHUB_REF_NAME##*/}"
 
   verify-release:
     name: verify-release (linux amd64)

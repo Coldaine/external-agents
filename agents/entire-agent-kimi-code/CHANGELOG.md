@@ -37,10 +37,10 @@ convention.
 
 ### Packaging
 
-- Release workflow (`.github/workflows/kimi-code-release.yml`) publishing
+- Release workflow (`.github/workflows/kimi-code-release.yml`) building
   archives and `checksums.txt` from `agents/entire-agent-kimi-code/v*` tags
-  with SHA-pinned GoReleaser, and post-release checksum plus host executable
-  verification.
+  with SHA-pinned GoReleaser, publishing them to the nested tag with GitHub
+  CLI, and running post-release checksum plus host executable verification.
 - Exact-version installation via
   `go install github.com/MooseGooseConsulting/external-agents/agents/entire-agent-kimi-code/cmd/entire-agent-kimi-code@agents/entire-agent-kimi-code/v0.1.0`.
 - No Kimi plugin is installed, no daemon runs, and there is no auto-update.
