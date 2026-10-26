@@ -37,6 +37,10 @@ Observed 2026-10-25 on Windows amd64 with Kimi 2.3.2, Entire 0.12.1, and Go 1.27
 7. The first two-child background run assigned both children to one task and emitted three parent ends for one native turn. Native spawn/tool prompt and completion/response correlation now distinguishes same-type children, rejects ambiguous matches, and suppresses child Stop events while the root is still running. Captured regressions and the repeated real two-child run pass.
 8. The reusable ACP capture driver collected all five diagnostic events (PreCompact, PostCompact, Interrupt, SessionEnd, StopFailure) in session `session_afb07250-55a8-4e63-92bd-ac108cd3b446` and an isolated failure session. It verified successful cancellation/close, restored the exact temporary config block, and retained raw logs outside Git. Those captures complement the earlier interactive runtime proof.
 
+## Release packaging evidence
+
+Added 2026-10-26: snapshot packaging (`.github/workflows/kimi-code.yml` `package-snapshot` job) and the tag release workflow (`.github/workflows/kimi-code-release.yml`) exist in source, including a post-release download, `checksums.txt`, and host-executable verification job. **Pending:** no `agents/entire-agent-kimi-code/v0.1.0` tag has been created, no GitHub release exists, and neither the snapshot job nor the release verifier (`scripts/verify-release.py --dist dist`) has been executed. Final release validation — a real snapshot run, a real tag run, and downloading a published archive — has not happened and is not claimed here.
+
 ## Limits and preservation
 
 - Live authenticated provider tests were performed on Windows. macOS/Linux CI tests are credential-free unit and protocol checks, not real Kimi provider sessions.

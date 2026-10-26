@@ -3,10 +3,23 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
+	"strings"
 
 	"github.com/MooseGooseConsulting/external-agents/agents/entire-agent-kimi-code/internal/kimi"
 	"github.com/MooseGooseConsulting/external-agents/agents/entire-agent-kimi-code/internal/protocol"
 )
+
+// devVersion is the fallback version for builds without a stamp, module
+// version, or VCS revision.
+const devVersion = "dev"
+
+// revisionLength bounds the VCS revision used in the fallback version.
+const revisionLength = 12
+
+// version is stamped by GoReleaser via -X main.version={{.Version}}. Ordinary
+// builds keep the default and fall back to build information.
+var version = devVersion
 
 func main() {
 	agent := kimi.New()
@@ -16,6 +29,10 @@ func main() {
 
 	var err error
 	switch os.Args[1] {
+	case "version", "--version":
+		if err = rejectExtraArgs(os.Args[1], os.Args[2:]); err == nil {
+			fmt.Fprintf(os.Stdout, "entire-agent-kimi-code version %s\n", versionString())
+		}
 	case "dispatch-hook":
 		if len(os.Args) != 3 {
 			fatalf("usage: entire-agent-kimi-code dispatch-hook <hook-name>")
@@ -24,9 +41,13 @@ func main() {
 	case "calculate-tokens", "calculate-total-tokens", "extract-all-modified-files":
 		err = agent.HandleAggregate(os.Args[1], os.Args[2:], os.Stdin, os.Stdout)
 	case "info":
-		err = protocol.WriteJSON(os.Stdout, agent.Info())
+		if err = rejectExtraArgs(os.Args[1], os.Args[2:]); err == nil {
+			err = protocol.WriteJSON(os.Stdout, agent.Info())
+		}
 	case "detect":
-		err = protocol.WriteJSON(os.Stdout, agent.Detect())
+		if err = rejectExtraArgs(os.Args[1], os.Args[2:]); err == nil {
+			err = protocol.WriteJSON(os.Stdout, agent.Detect())
+		}
 	case "get-session-id":
 		err = protocol.HandleGetSessionID(os.Stdin, os.Stdout, agent)
 	case "get-session-dir":
@@ -52,9 +73,13 @@ func main() {
 	case "install-hooks":
 		err = protocol.HandleInstallHooks(os.Args[2:], os.Stdout, agent)
 	case "uninstall-hooks":
-		err = agent.UninstallHooks()
+		if err = rejectExtraArgs(os.Args[1], os.Args[2:]); err == nil {
+			err = agent.UninstallHooks()
+		}
 	case "are-hooks-installed":
-		err = protocol.WriteJSON(os.Stdout, protocol.AreHooksInstalledResponse{Installed: agent.AreHooksInstalled()})
+		if err = rejectExtraArgs(os.Args[1], os.Args[2:]); err == nil {
+			err = protocol.WriteJSON(os.Stdout, protocol.AreHooksInstalledResponse{Installed: agent.AreHooksInstalled()})
+		}
 	case "get-transcript-position":
 		err = protocol.HandleGetTranscriptPosition(os.Args[2:], os.Stdout, agent)
 	case "extract-modified-files":
@@ -74,4 +99,52 @@ func main() {
 func fatalf(format string, args ...any) {
 	_, _ = fmt.Fprintf(os.Stderr, format+"\n", args...)
 	os.Exit(1)
+}
+
+// versionString reports the effective version: the GoReleaser stamp when
+// present, otherwise the build's module version or VCS revision.
+func versionString() string {
+	if version != "" && version != devVersion {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if v := versionFromBuildInfo(info); v != "" {
+			return v
+		}
+	}
+	return devVersion
+}
+
+// versionFromBuildInfo resolves a version from build information: the main
+// module version when the build used a real module version, otherwise the VCS
+// revision.
+func versionFromBuildInfo(info *debug.BuildInfo) string {
+	if info == nil {
+		return ""
+	}
+	if v := info.Main.Version; v != "" && v != "(devel)" {
+		return v
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "vcs.revision" && setting.Value != "" {
+			return devVersion + "-" + truncate(setting.Value, revisionLength)
+		}
+	}
+	return ""
+}
+
+// rejectExtraArgs returns an error when arguments are passed to a subcommand
+// that accepts none.
+func rejectExtraArgs(subcommand string, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	return fmt.Errorf("unexpected arguments for %s: %s", subcommand, strings.Join(args, " "))
+}
+
+func truncate(value string, length int) string {
+	if len(value) <= length {
+		return value
+	}
+	return value[:length]
 }

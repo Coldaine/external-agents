@@ -4,9 +4,19 @@ Locally maintained in [MooseGooseConsulting/external-agents](https://github.com/
 
 ## Install
 
-From this directory, `go build -o entire-agent-kimi-code.exe ./cmd/entire-agent-kimi-code` on Windows, or omit `.exe` on Linux/macOS. Copy the binary to an **absolute** directory already on PATH (for example `$HOME/.local/bin`). Keep source in this fork so the binary can be rebuilt.
+Install an exact released version from the module tag (see the changelog for available versions):
 
-In each repository, run `entire enable --agent kimi-code --local --skip-push-sessions` (or `entire agent add kimi-code` when Entire is already enabled). Verify the untracked `.entire/settings.local.json` enables `external_agents`, then run `entire agent list`. Hooks are global but dispatch only in Entire-enabled repositories. Start a fresh Kimi session.
+```bash
+go install github.com/MooseGooseConsulting/external-agents/agents/entire-agent-kimi-code/cmd/entire-agent-kimi-code@agents/entire-agent-kimi-code/v0.1.0
+```
+
+Tag pushes `agents/entire-agent-kimi-code/v*` also publish platform archives and a `checksums.txt` on the repository's [Releases](https://github.com/MooseGooseConsulting/external-agents/releases) page. Download the archive for your host, verify it with `sha256sum --check --strict checksums.txt`, and extract the binary onto an **absolute** directory already on `PATH` (for example `$HOME/.local/bin`).
+
+From a source checkout instead, `go build -o entire-agent-kimi-code.exe ./cmd/entire-agent-kimi-code` on Windows, or omit `.exe` on Linux/macOS. Copy the binary to the same kind of absolute PATH directory. Keep source in this fork so the binary can be rebuilt.
+
+There is no auto-update: the installed binary changes only when you replace it. Installing a newer tag's binary upgrades; reinstalling an older tag's binary downgrades. To remove entirely, run `entire-agent-kimi-code uninstall-hooks` (see [Config safety and removal](#config-safety-and-removal)) and delete the binary from the PATH directory. No Kimi plugin is installed and no daemon is added — the binary is only invoked by Kimi's managed hook rules and by Entire.
+
+In each repository, run `entire enable --agent kimi-code --local --skip-push-sessions` (or `entire agent add kimi-code` when Entire is already enabled). Verify the untracked `.entire/settings.local.json` enables `external_agents`, then run `entire agent list`. Enablement is per repository; hooks are global but dispatch only in Entire-enabled repositories. Start a fresh Kimi session.
 
 Nine managed rules use SessionStart, TurnStarted, Stop, StopFailure, Interrupt, PreCompact, SessionEnd, SubagentStart and SubagentStop. TurnStarted is the only managed turn boundary and covers user, task and system origins; subagent-origin TurnStarted is suppressed, and UserPromptSubmit stays an unmanaged diagnostic no-op. Each rule calls `entire-agent-kimi-code dispatch-hook <name>`, which holds a per-session lock through the complete `entire hooks kimi-code <name>` process. This prevents overlapping lifecycle writes, including fast failures overtaking turn initialization. Commands have a bounded 25-second timeout inside Kimi's 30-second hook timeout; no daemon is required.
 
@@ -40,7 +50,7 @@ For a real authenticated local test: `py -3 scripts/smoke-kimi.py --output <evid
 
 `py -3 scripts/smoke-subagents.py --children 2 --output <directory>` proves concurrent background child capture. `py -3 scripts/capture-kimi-lifecycle.py --output <directory>` uses ACP to trigger real compaction, cancellation and session close, plus the isolated failure test. Its temporary diagnostic hooks use a private backup and remove only their own block afterward. Raw captures stay outside Git; the script's `sanitize` subcommand produces restricted fixtures.
 
-See `EVIDENCE.md` for executed results and limitations, and `AGENT.md` for native schema research.
+See `EVIDENCE.md` for executed results and limitations, `CHANGELOG.md` for released versions, and `AGENT.md` for native schema research.
 
 ## Config safety and removal
 

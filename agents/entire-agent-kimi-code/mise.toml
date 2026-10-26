@@ -2,3 +2,6 @@
 run = "go build ./cmd/entire-agent-kimi-code"
 [tasks.test]
 run = "go test ./..."
+[tasks."verify-release"]
+description = "Verify packaged release artifacts in the repository-root dist directory"
+run = "python scripts/verify-release.py --dist ../../dist"
