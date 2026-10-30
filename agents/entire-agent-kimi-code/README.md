@@ -44,6 +44,10 @@ Structured Write/Edit paths are attributed; arbitrary shell writes are not guess
 
 Run `python scripts/verify-protocol.py <binary>` after installing the pinned upstream `external-agents-tests` CLI. The wrapper resolves semantic fixture paths, creates an isolated Kimi home and runs from a neutral directory. The upstream launcher otherwise selects the current Go module and can produce a false green by running that module's tests instead of the compliance suite.
 
+For version managers, ensure `go` and `external-agents-tests` resolve outside the repository too: the wrapper runs from a temporary directory, where repository-local shims may not select a version. With mise, place the directories containing `mise which go` and `mise which external-agents-tests` on `PATH`.
+
+The credential-free executable tests require Go, Git, and Python 3. They build the adapter and a controlled `entire` process, then use temporary repositories and homes. Run `python scripts/test_cli.py` and `python scripts/test_verify_protocol.py` from this directory. They cover hook serialization and failure cleanup, cursor and partial-record behavior, child correlation, configuration preservation, and protocol launcher failure propagation. CI runs both tests and verifies that the pinned upstream suite rejects a broken adapter on all three operating systems.
+
 For a real authenticated local test: `py -3 scripts/smoke-kimi.py --output <evidence-directory>`. This uses existing authentication in place, creates a disposable repo, and proves Write → commit → checkpoint → raw and readable transcripts → token usage → real resumed Edit → second checkpoint. It never copies credentials. Agent/hooks must already be installed. The inherited Unix/tmux harness also registers `KIMI_E2E=1 E2E_AGENT=kimi-code`.
 
 `py -3 scripts/smoke-failure.py` runs a real Kimi request against a loopback-only HTTP 400 provider in an isolated home, without authentication or production config changes. It asserts StopFailure closes the Entire turn. Interactive `/compact`, Escape, and `/exit` cover compaction, interruption and session end; `-p '/compact'` is ordinary model input and does not exercise compaction.

@@ -34,6 +34,13 @@ jobs:
           $suffix = if ($IsWindows) { '.exe' } else { '' }
           go build -o "$env:RUNNER_TEMP/entire-agent-kimi-code$suffix" ./cmd/entire-agent-kimi-code
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Credential-free CLI process and protocol launcher tests
+        working-directory: agents/entire-agent-kimi-code
+        run: |
+          python scripts/test_cli.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/test_verify_protocol.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Pinned upstream protocol suite with semantic fixtures
         run: |
           go install github.com/entireio/external-agents-tests@v0.0.0-20260328221431-3220ca8cc7ba
@@ -41,6 +48,12 @@ jobs:
           $suffix = if ($IsWindows) { '.exe' } else { '' }
           $binary = "$env:RUNNER_TEMP/entire-agent-kimi-code$suffix"
           python agents/entire-agent-kimi-code/scripts/verify-protocol.py $binary
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # The real suite must reject an executable that cannot answer info.
+          $broken = "$env:RUNNER_TEMP/entire-agent-broken$suffix"
+          go build -o $broken agents/entire-agent-kimi-code/scripts/testdata/fake_entire.go
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python agents/entire-agent-kimi-code/scripts/assert-protocol-failure.py $broken
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
   package-snapshot:
