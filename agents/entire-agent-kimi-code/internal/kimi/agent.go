@@ -334,7 +334,8 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 		return nil, e
 	}
 	subs := subagentRecords(ref)
-	if name == "stop" && len(subs) > 0 && !mainReadyForStop(ref) {
+	turnKey, ready := mainTurnForStop(ref)
+	if name == "stop" && len(subs) > 0 && (!ready || turnEndDelivered(ref, turnKey)) {
 		return nil, nil
 	}
 	if kind == 3 && name != "stop" && hasForegroundSubagent(subs) {
@@ -365,6 +366,11 @@ func (a *Agent) ParseHook(name string, b []byte) (*protocol.EventJSON, error) {
 		ev.ToolUseID = sub.ToolID
 		ev.SubagentType = sub.Name
 		ev.TaskDescription = sub.Description
+	}
+	if kind == 3 {
+		if e := noteTurnEnd(ref, turnKey); e != nil {
+			return nil, e
+		}
 	}
 	if p.Reason != "" {
 		ev.Metadata["reason"] = p.Reason

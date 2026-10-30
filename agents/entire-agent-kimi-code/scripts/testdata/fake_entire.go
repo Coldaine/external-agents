@@ -2,10 +2,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 )
@@ -49,6 +51,18 @@ func main() {
 				os.Exit(2)
 			}
 			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if os.Getenv("FAKE_ENTIRE_PARSE") == "1" {
+		cmd := exec.Command(os.Getenv("FAKE_KIMI_BINARY"), "parse-hook", "--hook", name)
+		cmd.Stdin = bytes.NewReader(data)
+		parsed, err := cmd.Output()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "fake Entire parse-hook failed:", err)
+			os.Exit(2)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name+".event.json"), parsed, 0600); err != nil {
+			panic(err)
 		}
 	}
 	if os.Getenv("FAKE_ENTIRE_FAIL") == name {

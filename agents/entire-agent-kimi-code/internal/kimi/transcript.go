@@ -19,11 +19,13 @@ import (
 const wireLoopEvent = "context.append_loop_event"
 
 type record struct {
-	Type    string          `json:"type"`
-	AgentID string          `json:"agentId"`
-	Time    int64           `json:"time"`
-	Input   json.RawMessage `json:"input"`
-	Message struct {
+	Type     string          `json:"type"`
+	AgentID  string          `json:"agentId"`
+	TurnID   json.RawMessage `json:"turnId"`
+	PromptID string          `json:"promptId"`
+	Time     int64           `json:"time"`
+	Input    json.RawMessage `json:"input"`
+	Message  struct {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
 		Origin  struct {
@@ -305,12 +307,6 @@ func (a *Agent) HandleAggregate(command string, args []string, in io.Reader, out
 		if sub.Calls > 0 {
 			t.Sub = &sub
 		}
-
-		t.Input += sub.Input
-		t.Output += sub.Output
-		t.Read += sub.Read
-		t.Create += sub.Create
-		t.Calls += sub.Calls
 	}
 	if command == "extract-all-modified-files" {
 		set := map[string]bool{}

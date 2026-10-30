@@ -2,9 +2,9 @@ name: Kimi Code adapter
 on:
   push:
     branches: [main, agent/kimi-code, codex/kimi-local]
-    paths: ['agents/entire-agent-kimi-code/**', '.github/workflows/kimi-code.yml']
+    paths: ['agents/entire-agent-kimi-code/**', '.github/workflows/kimi-code.yml', '.goreleaser.kimi-code.yaml']
   pull_request:
-    paths: ['agents/entire-agent-kimi-code/**', '.github/workflows/kimi-code.yml']
+    paths: ['agents/entire-agent-kimi-code/**', '.github/workflows/kimi-code.yml', '.goreleaser.kimi-code.yaml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -40,6 +40,8 @@ jobs:
           python scripts/test_cli.py
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python scripts/test_verify_protocol.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/test_repairs.py
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Pinned upstream protocol suite with semantic fixtures
         run: |

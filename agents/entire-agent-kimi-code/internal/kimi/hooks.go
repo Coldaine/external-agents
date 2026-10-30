@@ -87,6 +87,18 @@ func updateConfig(install bool) (int, error) {
 	if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
 		return 0, e
 	}
+	// Resolve an existing config link before locking, backing up and replacing
+	// it. A dangling or otherwise unresolvable link must fail without being
+	// replaced by a regular file.
+	if _, e := os.Lstat(path); e == nil {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return 0, fmt.Errorf("resolve kimi config: %w", err)
+		}
+		path = resolved
+	} else if !os.IsNotExist(e) {
+		return 0, e
+	}
 	lock, e := os.OpenFile(path+".entire-lock", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if e != nil {
 		return 0, errors.New("kimi config is locked by another Entire installer")

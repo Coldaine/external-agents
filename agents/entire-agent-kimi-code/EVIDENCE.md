@@ -49,7 +49,7 @@ Observed 2026-10-26 at revision `2f886f0`:
 - Local GoReleaser v2.12.7 snapshot (`release --snapshot --clean --config .goreleaser.kimi-code.yaml`) succeeded, and `scripts/verify-release.py --dist dist` passed against its output, including all six platform archives, `checksums.txt`, and the packaged Windows binary's embedded version and module information.
 - The pre-release CI matrix run [40283545578](https://github.com/MooseGooseConsulting/external-agents/actions/runs/40283545578) passed on Windows, macOS and Ubuntu, including the `package-snapshot` job that runs the same snapshot and verifier in CI. Inherited CI [40283545613](https://github.com/MooseGooseConsulting/external-agents/actions/runs/40283545613), lint [40283545631](https://github.com/MooseGooseConsulting/external-agents/actions/runs/40283545631), protocol [40283545550](https://github.com/MooseGooseConsulting/external-agents/actions/runs/40283545550) and license [40283546502](https://github.com/MooseGooseConsulting/external-agents/actions/runs/40283546502) are all green at the same revision.
 
-**Still pending:** no `agents/entire-agent-kimi-code/v0.1.0` tag has been created, no GitHub release exists, and the `kimi-code-release.yml` tag run — downloading a published archive, checking `checksums.txt`, and verifying the extracted host executable — has not happened and is not claimed here.
+**Release update:** The `agents/entire-agent-kimi-code/v0.1.0` tag and GitHub release were published on 2026-10-26 in MooseGooseConsulting/external-agents, with six platform archives and `checksums.txt`. Published-archive workflow execution was not verified as part of this update.
 
 ## Limits and preservation
 

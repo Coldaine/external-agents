@@ -100,15 +100,32 @@ func findSubagent(subs []subagent, q subagentQuery) (subagent, int) {
 	return found, count
 }
 
-func mainReadyForStop(ref string) bool {
+// mainTurnForStop identifies the latest main turn and whether its native log
+// has reached a terminal step or turn. turn.ended is not proof that Entire
+// has already processed its corresponding hook.
+func mainTurnForStop(ref string) (string, bool) {
 	b, _ := os.ReadFile(ref)
 	rs, _, _ := records(b, 0)
+	turnID, key := "", ""
 	ready := false
 	for _, r := range rs {
-		if r.Type == "turn.prompt" || r.Type == "turn.ended" {
-			ready = false
+		if r.AgentID != "" && r.AgentID != "main" {
+			continue
 		}
-		if r.Type == wireLoopEvent {
+		switch r.Type {
+		case "turn.prompt":
+			turnID = nativeTurnID(r.TurnID)
+			key = turnID
+			if r.PromptID != "" {
+				key += "|" + r.PromptID
+			}
+			ready = false
+		case "turn.ended":
+			endID := nativeTurnID(r.TurnID)
+			if turnID != "" && endID == turnID {
+				ready = true
+			}
+		case wireLoopEvent:
 			if r.Event.Type == "step.begin" {
 				ready = false
 			}
@@ -117,7 +134,54 @@ func mainReadyForStop(ref string) bool {
 			}
 		}
 	}
-	return ready
+	return key, ready
+}
+
+func nativeTurnID(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text
+	}
+	var number json.Number
+	if json.Unmarshal(raw, &number) == nil {
+		return number.String()
+	}
+	return ""
+}
+
+func turnEndMarker(ref string) string { return ref + ".turn-end.jsonl" }
+
+func turnEndDelivered(ref, key string) bool {
+	if key == "" {
+		return false
+	}
+	b, err := os.ReadFile(turnEndMarker(ref))
+	return err == nil && string(b) == key
+}
+
+// A dispatch-owned file reports that parse-hook actually produced a TurnEnd.
+// The dispatcher persists the turn key only after Entire exits successfully.
+func noteTurnEnd(ref, key string) error {
+	pending := os.Getenv("ENTIRE_KIMI_TURN_END_PENDING")
+	if pending == "" || key == "" {
+		return nil
+	}
+	dir := filepath.Dir(ref)
+	prefix := ".turn-end-" + strings.TrimSuffix(filepath.Base(ref), ".jsonl") + "-"
+	if filepath.Dir(pending) != dir || !strings.HasPrefix(filepath.Base(pending), prefix) || filepath.Ext(pending) != ".jsonl" {
+		return errors.New("invalid pending turn marker")
+	}
+	if err := managedPath(pending); err != nil {
+		return err
+	}
+	info, err := os.Lstat(pending)
+	if err != nil || !info.Mode().IsRegular() {
+		return errors.New("invalid pending turn marker")
+	}
+	return atomicWrite(pending, []byte(key))
 }
 func copySubagents(native, ref, id string) error {
 	sourceDir := filepath.Dir(filepath.Dir(native))

@@ -63,7 +63,35 @@ func DispatchHook(name string, in io.Reader, out, diagnostics io.Writer) error {
 	defer unlock()
 	cmd := exec.CommandContext(ctx, "entire", "hooks", "kimi-code", name)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = bytes.NewReader(data), out, diagnostics
-	return cmd.Run()
+	if name != "stop" && name != "stop-failure" && name != "interrupt" {
+		return cmd.Run()
+	}
+	pending, err := os.CreateTemp(dir, ".turn-end-"+payload.ID+"-*.jsonl")
+	if err != nil {
+		return err
+	}
+	pendingPath := pending.Name()
+	defer os.Remove(pendingPath)
+	if err = pending.Close(); err != nil {
+		return err
+	}
+	cmd.Env = append(os.Environ(), "ENTIRE_KIMI_TURN_END_PENDING="+pendingPath)
+	if err = cmd.Run(); err != nil {
+		return err
+	}
+	key, err := os.ReadFile(pendingPath)
+	if err != nil {
+		return err
+	}
+	if len(key) == 0 {
+		return nil
+	}
+	ref := filepath.Join(dir, payload.ID+".jsonl")
+	marker := turnEndMarker(ref)
+	if err = managedPath(marker); err != nil {
+		return err
+	}
+	return atomicWrite(marker, key)
 }
 
 func acquireHookLock(ctx context.Context, path string) (func(), error) {

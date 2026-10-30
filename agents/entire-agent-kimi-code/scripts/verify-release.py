@@ -174,7 +174,7 @@ def extract_host_binary(archive: Path, os_name: str, dest: Path) -> Path | None:
                 ]
                 if not match:
                     return None
-                zf.extract(match[0], dest)
+                data = zf.read(match[0])
         else:
             with tarfile.open(archive, "r:gz") as tar:
                 match = [
@@ -183,13 +183,18 @@ def extract_host_binary(archive: Path, os_name: str, dest: Path) -> Path | None:
                 ]
                 if not match:
                     return None
-                tar.extract(match[0], dest)
+                member = tar.extractfile(match[0])
+                if member is None:
+                    return None
+                with member:
+                    data = member.read()
+        binary = dest / wanted
+        binary.write_bytes(data)
+        if os_name != "windows":
+            binary.chmod(0o755)
+        return binary
     except (tarfile.TarError, zipfile.BadZipFile, OSError):
         return None
-    binary = dest / wanted
-    if os_name != "windows":
-        binary.chmod(0o755)
-    return binary
 
 
 def host_platform() -> tuple[str, str]:

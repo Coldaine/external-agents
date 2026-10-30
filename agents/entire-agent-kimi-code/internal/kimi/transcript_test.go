@@ -277,3 +277,27 @@ func TestTokenAggregationEdgeCases(t *testing.T) {
 		t.Fatal("accepted unknown flag")
 	}
 }
+
+func TestTotalTokenUsageSeparatesParentAndSubagents(t *testing.T) {
+	childDir := t.TempDir()
+	put(t, filepath.Join(childDir, "child.jsonl"), []byte("{\"type\":\"usage.record\",\"usage\":{\"inputOther\":7,\"output\":3,\"inputCacheRead\":5,\"inputCacheCreation\":2}}\n"))
+	main := []byte("{\"type\":\"usage.record\",\"usage\":{\"inputOther\":11,\"output\":4,\"inputCacheRead\":6,\"inputCacheCreation\":1}}\n")
+	var out bytes.Buffer
+	if err := New().HandleAggregate("calculate-total-tokens", []string{"--subagents-dir", childDir}, bytes.NewReader(main), &out); err != nil {
+		t.Fatal(err)
+	}
+	var usage tokens
+	if err := json.Unmarshal(out.Bytes(), &usage); err != nil {
+		t.Fatal(err)
+	}
+	if usage.Input != 11 || usage.Output != 4 || usage.Read != 6 || usage.Create != 1 || usage.Calls != 1 {
+		t.Fatalf("parent usage includes child: %+v", usage)
+	}
+	if usage.Sub == nil || usage.Sub.Input != 7 || usage.Sub.Output != 3 || usage.Sub.Read != 5 || usage.Sub.Create != 2 || usage.Sub.Calls != 1 {
+		t.Fatalf("child usage missing or incorrect: %+v", usage.Sub)
+	}
+	// Entire 0.12.1 recursively adds child usage to the parent total.
+	if got := usage.Input + usage.Output + usage.Read + usage.Create + usage.Sub.Input + usage.Sub.Output + usage.Sub.Read + usage.Sub.Create; got != 39 {
+		t.Fatalf("recursive total = %d, want 39", got)
+	}
+}

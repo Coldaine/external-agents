@@ -224,6 +224,38 @@ class CliTests(unittest.TestCase):
                           data=self.payload("SubagentStop", response="Done"), success=False)
         self.assertIn(b"uniquely correlate", result.stderr)
 
+    def test_delayed_main_stop_and_late_child_stop(self):
+        (self.repo / ".entire").mkdir()
+        native = self.setup_native((FIXTURES / "transcripts" / "background-main.jsonl").read_bytes())
+        env = dict(self.env, FAKE_ENTIRE_PARSE="1", FAKE_KIMI_BINARY=str(self.binary))
+        payload = self.payload("Stop", session_id="session_test")
+        event_path = self.fake_dir / "stop.event.json"
+        self.cli("dispatch-hook", "stop", data=payload, env=env)
+        self.assertEqual(json.loads(event_path.read_text())["type"], 3)
+        self.cli("dispatch-hook", "stop", data=payload, env=env)
+        self.assertIsNone(json.loads(event_path.read_text()))
+
+        def next_turn(number):
+            with native.open("ab") as f:
+                for row in ({"type": "turn.prompt", "agentId": "main", "turnId": number, "promptId": f"prompt-{number}"},
+                            {"type": "context.append_loop_event", "agentId": "main", "event": {"type": "step.end", "finishReason": "end_turn"}},
+                            {"type": "turn.ended", "agentId": "main", "turnId": number}):
+                    f.write((json.dumps(row) + "\n").encode())
+
+        next_turn(1)
+        self.cli("dispatch-hook", "stop", data=payload, env=env)
+        self.assertEqual(json.loads(event_path.read_text())["type"], 3)
+        self.cli("dispatch-hook", "stop", data=payload, env=env)
+        self.assertIsNone(json.loads(event_path.read_text()))
+        next_turn(2)
+        self.cli("dispatch-hook", "stop", data=payload, success=False,
+                 env=dict(env, FAKE_ENTIRE_FAIL="stop"))
+        self.assertEqual(json.loads(event_path.read_text())["type"], 3)
+        self.cli("dispatch-hook", "stop", data=payload, env=env)
+        self.assertEqual(json.loads(event_path.read_text())["type"], 3)
+        self.cli("dispatch-hook", "stop", data=payload, env=env)
+        self.assertIsNone(json.loads(event_path.read_text()))
+
     def test_hook_installation_preserves_unrelated_configuration(self):
         config = self.home / "config.toml"
         original = b'default_model = "sentinel"\n\n[[hooks]]\nevent = "Foreign"\ncommand = "keep"\n'

@@ -532,3 +532,40 @@ func TestStagedWriteRequiresStagedTargetAndReplacesItWhole(t *testing.T) {
 		t.Fatalf("staged write truncated to %q, want an empty file", b)
 	}
 }
+
+func TestInstallAndUninstallPreserveConfigSymlink(t *testing.T) {
+	_, home := setup(t)
+	targetDir := t.TempDir()
+	target := filepath.Join(targetDir, "config.toml")
+	original := []byte("model = 'sentinel'\n")
+	put(t, target, original)
+	link := configPath(home)
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("config symlink unavailable: %v", err)
+	}
+	if _, err := New().InstallHooks(false, false); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("install replaced config symlink: %v", err)
+	}
+	installed, err := os.ReadFile(target)
+	if err != nil || !bytes.HasPrefix(installed, original) || !bytes.Contains(installed, hookBlock()) {
+		t.Fatalf("target did not receive hooks: %v", err)
+	}
+	if !New().AreHooksInstalled() {
+		t.Fatal("hooks not detected through config symlink")
+	}
+	if err := New().UninstallHooks(); err != nil {
+		t.Fatal(err)
+	}
+	info, err = os.Lstat(link)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("uninstall replaced config symlink: %v", err)
+	}
+	restored, err := os.ReadFile(target)
+	if err != nil || !bytes.Equal(restored, original) {
+		t.Fatalf("uninstall did not restore target: %v", err)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -59,7 +60,13 @@ func TestConcurrentSameNameChildrenUsePayloadIdentity(t *testing.T) {
 			t.Fatalf("child %s was miscorrelated: %v %v", s.ID, ev, e)
 		}
 	}
-	// A child Stop after the parent already ended must not emit another TurnEnd.
+	// Model a successful prior parent TurnEnd before a late child Stop arrives.
+	ref := filepath.Join(repo, ".entire", "metadata", "kimi-code", "session_test.jsonl")
+	key, ready := mainTurnForStop(ref)
+	if !ready || key == "" {
+		t.Fatal("fixture lacks a completed identifiable main turn")
+	}
+	put(t, turnEndMarker(ref), []byte(key))
 	p, _ := json.Marshal(map[string]any{"session_id": "session_test", "cwd": repo})
 	ev, e := New().ParseHook("stop", p)
 	if e != nil || ev != nil {

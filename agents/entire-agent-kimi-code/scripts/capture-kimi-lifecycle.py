@@ -435,14 +435,14 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "capture":
         hook_mode()
         return
-    if len(sys.argv) > 1 and sys.argv[1] == "sanitize":
+    if len(sys.argv) > 1 and sys.argv[1] in ("sanitize", "sanitize-transcript"):
         parser = argparse.ArgumentParser()
         parser.add_argument("raw")
         parser.add_argument("fixture")
         parser.add_argument("--repo", required=True)
         parser.add_argument("--transcript", action="store_true")
         args = parser.parse_args(sys.argv[2:])
-        if args.transcript:
+        if args.transcript or sys.argv[1] == "sanitize-transcript":
             sanitize_transcript_command(args.raw, args.fixture, args.repo)
         else:
             sanitize_command(args.raw, args.fixture, args.repo)

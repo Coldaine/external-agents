@@ -15,11 +15,12 @@ FIXTURES = SCRIPT.parent.parent / "testdata"
 class VerifyProtocolTests(unittest.TestCase):
     def run_wrapper(self, suite_exit):
         with tempfile.TemporaryDirectory() as temp:
-            binary = Path(temp) / "adapter"
+            (Path(temp) / "alias").mkdir()
+            binary = Path(temp) / "alias" / ".." / "adapter"
             binary.touch()
 
             def verify(args, *, cwd, env):
-                self.assertEqual(args[:3], ["external-agents-tests", "verify", str(binary)])
+                self.assertEqual(args[:3], ["external-agents-tests", "verify", str(binary.resolve())])
                 self.assertEqual(args[3], "--fixtures")
                 self.assertNotEqual(Path(cwd), SCRIPT.parent.parent)
                 self.assertEqual(Path(args[4]).parent, Path(cwd))
