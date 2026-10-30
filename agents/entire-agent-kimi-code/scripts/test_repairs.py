@@ -2,6 +2,7 @@
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -41,7 +42,7 @@ class ScriptRegressionTests(unittest.TestCase):
                     self.assertEqual(binary.read_bytes(), b"binary")
                     self.assertFalse((root / "escape").exists())
                     self.assertFalse((dest / "nested").exists())
-                    if system == "linux":
+                    if system == "linux" and os.name != "nt":
                         self.assertTrue(binary.stat().st_mode & 0o111)
 
     def test_sanitize_transcript_alias_and_existing_flag(self):
